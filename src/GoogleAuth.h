@@ -23,6 +23,10 @@ typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
 
 + (BOOL)isConfigured;                 // this build has a client ID
 + (NSString *)cloudProjectID;         // Cloud project for quota (x-goog-user-project); may be empty
++ (NSString *)clientID;               // effective OAuth client ID: entered in the app, else from the build; may be empty
++ (BOOL)isValidClientID:(NSString *)candidate;
+// Saves the values entered in the app (empty value = remove it). They take priority over the build settings.
++ (void)saveClientID:(NSString *)clientID projectID:(NSString *)projectID;
 + (BOOL)isSignedIn;                   // a refresh token is stored on this device
 + (NSString *)accountEmail;           // email of the signed-in account, if Google told us
 
