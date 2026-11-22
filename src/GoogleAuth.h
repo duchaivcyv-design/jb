@@ -22,6 +22,7 @@ typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
 @interface GoogleAuth : NSObject
 
 + (BOOL)isConfigured;                 // this build has a client ID
++ (NSString *)cloudProjectID;         // Cloud project for quota (x-goog-user-project); may be empty
 + (BOOL)isSignedIn;                   // a refresh token is stored on this device
 + (NSString *)accountEmail;           // email of the signed-in account, if Google told us
 
