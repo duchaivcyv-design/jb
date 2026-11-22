@@ -12,9 +12,9 @@ static NSString *const kTokenEndpoint    = @"https://oauth2.googleapis.com/token
 static NSString *const kUserInfoEndpoint = @"https://openidconnect.googleapis.com/v1/userinfo";
 static NSString *const kClientSuffix     = @".apps.googleusercontent.com";
 
-// Identity (to show which account is in use) plus the Gemini API scope.
-// If sign-in succeeds but Gemini answers 403 "permission denied", this Gemini scope is the first thing to check.
-static NSString *const kScopes = @"openid email https://www.googleapis.com/auth/generative-language.peruserdata";
+// Identity (to show which account is in use) plus the Gemini API scopes from Google's OAuth quickstart
+// (https://ai.google.dev/gemini-api/docs/oauth). generative-language.retriever is the scope for the Gemini API.
+static NSString *const kScopes = @"openid email https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever";
 
 static NSString *const kKeychainService   = @"com.puc.claudemini";
 static NSString *const kAccountRefresh    = @"google-refresh-token";
@@ -50,6 +50,13 @@ static id gAuthAnchor;      // presentation anchor for the sign-in page, kept al
 
 static NSString *ClientID(void) {
     id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"GoogleOAuthClientID"];
+    if (![value isKindOfClass:[NSString class]]) return @"";
+    return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+// Cloud project that owns the quota for requests made with the user's token (set at build time).
+static NSString *CloudProjectID(void) {
+    id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"GoogleCloudProjectID"];
     if (![value isKindOfClass:[NSString class]]) return @"";
     return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
@@ -198,6 +205,10 @@ static void LoadAccessLocked(void) {
 @implementation GoogleAuth
 
 #pragma mark State
+
++ (NSString *)cloudProjectID {
+    return CloudProjectID();
+}
 
 + (BOOL)isConfigured {
     NSString *clientID = ClientID();
