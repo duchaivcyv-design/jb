@@ -613,7 +613,8 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:L(@"context_memory_title")
                                                                    message:L(@"context_memory_note")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray *options = @[ @[@200000, [NSString stringWithFormat:L(@"context_memory_value"), 200]],
+    NSArray *options = @[ @[@100000, [NSString stringWithFormat:L(@"context_memory_value"), 100]],
+                          @[@200000, [NSString stringWithFormat:L(@"context_memory_value"), 200]],
                           @[@400000, [NSString stringWithFormat:L(@"context_memory_value"), 400]],
                           @[@600000, [NSString stringWithFormat:L(@"context_memory_value"), 600]] ];
     __weak typeof(self) weakSelf = self;

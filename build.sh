@@ -62,6 +62,10 @@ if [ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" ]; then
   GOOGLE_PREFIX="${GOOGLE_ID%.apps.googleusercontent.com}"
   /usr/libexec/PlistBuddy -c "Delete :GoogleOAuthClientID" "$APPDIR/Info.plist" >/dev/null 2>&1 || true
   /usr/libexec/PlistBuddy -c "Add :GoogleOAuthClientID string $GOOGLE_ID" "$APPDIR/Info.plist"
+  if [ -n "${GOOGLE_CLOUD_PROJECT_ID:-}" ]; then
+    /usr/libexec/PlistBuddy -c "Delete :GoogleCloudProjectID" "$APPDIR/Info.plist" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c "Add :GoogleCloudProjectID string $GOOGLE_CLOUD_PROJECT_ID" "$APPDIR/Info.plist"
+  fi
   /usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$APPDIR/Info.plist" >/dev/null 2>&1 || true
   /usr/libexec/PlistBuddy \
     -c "Add :CFBundleURLTypes array" \

@@ -162,6 +162,7 @@
 
     BOOL imageGenerationModel = [lowerModel containsString:@"image"] || [lowerModel containsString:@"nano-banana"];
     if (imageGenerationModel) {
+        [generationConfig removeObjectForKey:@"thinkingConfig"];
         generationConfig[@"responseModalities"] = @[@"TEXT", @"IMAGE"];
     }
 
@@ -170,9 +171,10 @@
     if (self.system.length > 0) {
         payload[@"systemInstruction"] = @{ @"parts": @[ @{ @"text": self.system } ] };
     }
-    if ([AppSettings webSearchEnabled] && !imageGenerationModel) {
-        payload[@"tools"] = @[@{ @"google_search": @{} }];
-    }
+    NSMutableArray *tools = [NSMutableArray array];
+    if ([AppSettings webSearchEnabled] && !imageGenerationModel) [tools addObject:@{ @"google_search": @{} }];
+    if (self.allowCodeExecution && !imageGenerationModel) [tools addObject:@{ @"code_execution": @{} }];
+    if (tools.count > 0) payload[@"tools"] = tools;
 
     NSJSONWritingOptions opts = 0;
     if (@available(iOS 13.0, *)) {

@@ -1,23 +1,36 @@
 # ClaudeMini 0.8.0 — Đăng nhập Google hoặc API key, và sửa lỗi treo
 
 ## Mới ở 0.8.0
+- **Tạo file:** AI có thể đưa một file để tải về (Word `.docx`, `.txt`, `.md`, `.csv`, `.json`, `.html`, mã nguồn). File hiện thành một chip trong chat; chạm vào để chia sẻ hoặc lưu. `.xlsx`, `.pptx`, `.pdf` chưa tạo đúng định dạng; app lưu nội dung thành `.txt` và báo rõ.
+- **Chạy code (Gemini):** khi câu hỏi cần tính toán, vẽ biểu đồ hoặc xử lý dữ liệu, Gemini có thể chạy Python trên máy chủ của Google.
+- **Mức suy luận:** Thấp → Trung bình → Cao → Siêu cao → Tối đa. Mức càng cao, model suy nghĩ càng lâu, tự kiểm tra kỹ hơn và trả lời dài, chi tiết hơn. Trên đầu ra của đang suy nghĩ có đếm giây/phút. Với Gemini 3, API chỉ có 3 mức suy nghĩ nên Cao, Siêu cao và Tối đa cho cùng một mức thực tế.
+- **Tìm trên web:** bật mặc định cho cả Gemini và Claude (tắt được trong menu công cụ).
+- **Tạo ảnh:** khi bạn yêu cầu vẽ hoặc tạo ảnh ("vẽ…", "tạo ảnh…"), app dùng model tạo ảnh của Gemini cho lượt đó. Model tạo ảnh cần có sẵn trong danh sách model của key bạn.
+- **Tốc độ trả lời:** lịch sử gửi cho AI mặc định 200 nghìn ký tự (trước là 10 triệu nên cuộc chat dài rất chậm). Ảnh/PDF mặc định chỉ gửi lại cho tin gần nhất. Mức suy luận mặc định là Thấp; có thể đổi trong Cài đặt. Các mức 100k, 200k, 400k, 600k giờ đều có hiệu lực (trước đó chúng bị lưu thành 10 triệu).
 - **Đăng nhập bằng tài khoản Google** cho Gemini, bên cạnh API key. Trên màn hình nhập key có nút **Đăng nhập bằng Google** (chỉ hiện khi bản build có client ID, xem bên dưới). Đăng nhập xong, app kiểm tra Gemini có chấp nhận quyền đó không; nếu không, app tự đăng xuất Google và báo lỗi (HTTP) để bạn biết.
 - Khi lưu một API key mới, app chuyển sang dùng key đó. Khi đăng nhập Google, app dùng tài khoản Google. Nút đăng xuất ở màn hình này sẽ xóa đúng cái đang dùng.
 - Token của Google được làm mới tự động khi app mở lại, và ngay trước mỗi yêu cầu.
 - **Sửa lỗi treo không trả lời:** khi model suy nghĩ quá lâu (không gửi dữ liệu trong 180 giây), trước đây app tự thử lại âm thầm tối đa 14 lần, mỗi lần chờ thêm 180 giây, nên trông như treo gần 40 phút. Bây giờ app báo lỗi ngay sau lần chờ đầu tiên, với gợi ý hạ mức suy luận trong Cài đặt. Các lỗi mạng khác vẫn được thử lại nhưng tối đa 3 lần.
 
 ### Cách bật đăng nhập Google (làm một lần)
-1. Trong Google Cloud Console, tạo một project, bật **Generative Language API** (Gemini API), và cấu hình **OAuth consent screen** (User type: External, thêm email của bạn vào Test users).
-2. Tạo **OAuth client ID** loại **iOS**, với Bundle ID `com.puc.claudemini`. Copy client ID dạng `123456-abc.apps.googleusercontent.com`.
-3. Trong repo GitHub của bạn: Settings › Secrets and variables › Actions › tab **Variables**, tạo `GOOGLE_OAUTH_CLIENT_ID` với giá trị trên. Chạy lại workflow build.
-4. Nếu không đặt biến này, bản build vẫn chạy bình thường bằng API key; chỉ không có nút Google.
+1. Google Cloud Console: tạo project (hoặc chọn project có sẵn) và **bật Generative Language API**. Ghi lại **Project ID** (dạng `my-project-123`).
+2. Vào **Google Auth platform › Audience**: chọn **External**, thêm email của bạn vào **Test users**. Sau đó bấm **Publish app** (chuyển sang **In production**). Với app ở trạng thái Testing, refresh token hết hạn sau 7 ngày. Khi đã In production, bạn chỉ thấy cảnh báo "chưa xác minh" khi đăng nhập, không cần xác minh nếu chỉ dùng cho dưới 100 người.
+3. Tạo **OAuth client ID** loại **iOS**, Bundle ID `com.puc.claudemini`. Copy client ID dạng `123456-abc.apps.googleusercontent.com`.
+4. Trong repo GitHub: Settings › Secrets and variables › Actions › tab **Variables**, tạo:
+   - `GOOGLE_OAUTH_CLIENT_ID` = client ID ở bước 3
+   - `GOOGLE_CLOUD_PROJECT_ID` = Project ID ở bước 1
+5. Chạy lại workflow build và cài bản mới.
+
+**Hoặc không cần build lại:** bấm nút Google trong app (hoặc giữ nút) rồi dán Client ID và Project ID vào hộp thoại. Giá trị nhập trong app được ưu tiên hơn giá trị lúc build.
+
+Nếu không đặt biến nào, app vẫn chạy bình thường bằng API key; nút Google chỉ báo là build chưa được cấu hình.
 
 ### Lưu ý quan trọng
-- Yêu cầu đăng nhập Google đi qua **project Google Cloud của client ID** chứ không phải hạn mức cá nhân của tài khoản đăng nhập. Nghĩa là hạn mức tính vào project bạn tạo ra.
-- Phạm vi (scope) của Gemini khi đăng nhập bằng OAuth được khai báo trong `src/GoogleAuth.m` (`kScopes`). Nếu đăng nhập được nhưng Gemini báo 403, đó là chỗ cần kiểm tra trước.
-- Bản 0.8.0 được viết mà chưa biên dịch và chưa chạy trên máy thật. Hãy build và thử đăng nhập một lần, rồi xem **Cài đặt › Nhật ký chẩn đoán** nếu có lỗi.
-
----
+- Yêu cầu bằng token của tài khoản Google được tính hạn mức và thanh toán vào **project của bạn** (GOOGLE_CLOUD_PROJECT_ID). Đây là lý do cần cả hai biến.
+- Scope đang dùng theo tài liệu chính thức của Google: `generative-language.retriever` cùng `cloud-platform` (khai báo trong `src/GoogleAuth.m`, biến `kScopes`).
+- Access token chỉ sống khoảng 1 giờ; app tự làm mới bằng refresh token và không cần đăng nhập lại mỗi giờ.
+- Không dùng client ID của Gemini CLI hay của bên thứ ba: đó là client của người khác và các endpoint của nó không dành cho app này.
+- Bản 0.8.0 chưa được biên dịch và chưa thử trên máy thật. Build và thử đăng nhập một lần; nếu lỗi, xem **Cài đặt › Nhật ký chẩn đoán**.
 
 ## Phiên bản trước
 

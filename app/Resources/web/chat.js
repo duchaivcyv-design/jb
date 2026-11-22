@@ -292,6 +292,7 @@
           var chip = el('div', 'file');
           chip.appendChild(el('span', 'ext', extLabel(a)));
           chip.appendChild(el('span', 'fname', a.name || ''));
+          if (a.kind === 'file') { chip.style.cursor = 'pointer'; chip.addEventListener('click', (function (id) { return function () { post({ type: 'file', id: id }); }; })(a.id), false); }
           box.appendChild(chip);
         }
       }
@@ -455,6 +456,10 @@
       addUser(text, atts, messageIndex);
       stick = true;
       toBottom(true);
+    },
+
+    setStatus: function (text) {
+      if (current && current.status) current.status.textContent = text;
     },
 
     begin: function () {

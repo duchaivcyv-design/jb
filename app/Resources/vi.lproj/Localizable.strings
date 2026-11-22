@@ -281,3 +281,16 @@
 "google_sign_out" = "Đăng xuất Google";
 "google_sign_out_msg" = "Bạn sẽ phải đăng nhập lại bằng Google để dùng Gemini.";
 "err_timeout" = "Model không trả lời kịp thời gian chờ (thường do model suy nghĩ quá lâu). Thử hạ mức suy luận trong Cài đặt rồi gửi lại.";
+
+// In-app Google setup (0.8.0)
+"google_edit_hint" = "Giữ nút để sửa Client ID và Project ID.";
+"google_config_title" = "Cấu hình Google";
+"google_config_msg" = "Dán OAuth Client ID (dạng …apps.googleusercontent.com) và Project ID từ Google Cloud Console của bạn.";
+"google_config_client_placeholder" = "Client ID";
+"google_config_project_placeholder" = "Project ID (không bắt buộc)";
+"google_config_save" = "Lưu và đăng nhập";
+"google_bad_client_id" = "Client ID phải có dạng 123-abc.apps.googleusercontent.com";
+
+// Thinking time (0.8.0)
+"thinking_seconds" = "Đang suy nghĩ… %ld giây";
+"thinking_minutes" = "Đang suy nghĩ… %ld phút %ld giây";

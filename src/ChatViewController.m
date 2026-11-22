@@ -31,7 +31,6 @@ static const CGFloat kMaxInputHeight = 120;
 static const CGFloat kStripHeight = 64;
 static const CGFloat kToolsRowHeight = 0;
 static const NSUInteger kGreetingCount = 6;
-static const NSUInteger kForceMaxContextChars = 4000000;
 static const NSUInteger kFastChunkReadBytes = 4 * 1024 * 1024;
 
 #pragma mark - Weak script handler
@@ -453,6 +452,8 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 
 @property (strong, nonatomic) NSMutableArray *pendingAttachments;
 @property (assign, nonatomic) NSInteger importsInFlight;
+@property (strong, nonatomic) NSTimer *thinkingTimer;
+@property (assign, nonatomic) CFAbsoluteTime thinkingStart;
 @end
 
 @implementation ChatViewController
@@ -1269,7 +1270,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 - (void)reasoningSliderChanged:(UISlider *)slider {
     NSInteger level = (NSInteger)lrintf(slider.value);
     [AppSettings setReasoningLevel:(AIReasoningLevel)level];
-    NSArray *names = @[@"Thấp", @"Trung bình", @"Cao", @"Siêu cao", @"MAX ×8"];
+    NSArray *names = @[@"Thấp", @"Trung bình", @"Cao", @"Siêu cao", @"Tối đa"];
     self.reasoningValueLabel.text = names[(NSUInteger)level];
     [self updateToolButtons];
     [self pushStrings];
@@ -1518,6 +1519,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)stopDeltaFlushTimer {
+    [self stopThinkingTimer];
     [self flushPendingJSDelta];
     if (self.deltaFlushTimer) {
         dispatch_source_cancel(self.deltaFlushTimer);
@@ -1725,6 +1727,8 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     } else if ([type isEqualToString:@"save"]) {
         NSString *text = body[@"text"];
         if ([text isKindOfClass:[NSString class]] && text.length > 0) [self offerExportForText:text];
+    } else if ([type isEqualToString:@"file"]) {
+        [self shareFileForAttachmentId:body[@"id"]];
     } else if ([type isEqualToString:@"image"]) {
         [self showImageForAttachmentId:body[@"id"]];
     } else if ([type isEqualToString:@"shareImage"]) {
@@ -2970,7 +2974,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 }
 
 - (NSUInteger)resolvedContextCharLimit {
-    NSUInteger contextLimit = MAX([AppSettings contextLimitChars], kForceMaxContextChars);
+    NSUInteger contextLimit = [AppSettings contextLimitChars];
     AIProvider provider = [Provider forModelId:self.model];
     NSInteger inputTokenCap = [ModelStore maxInputTokensForModelId:self.model provider:provider];
     if (inputTokenCap > 0) {
@@ -3106,7 +3110,172 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     [self updateSendButton];
     [self startDeltaFlushTimer];
     [self callJS:@"begin" args:@[]];
+    [self startThinkingTimer];
     [self launchRequestStreaming:YES];
+}
+
+- (void)startThinkingTimer {
+    [self stopThinkingTimer];
+    self.thinkingStart = CFAbsoluteTimeGetCurrent();
+    self.thinkingTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tickThinking) userInfo:nil repeats:YES];
+    [self tickThinking];
+}
+
+- (void)stopThinkingTimer {
+    [self.thinkingTimer invalidate];
+    self.thinkingTimer = nil;
+}
+
+- (void)tickThinking {
+    NSInteger seconds = (NSInteger)(CFAbsoluteTimeGetCurrent() - self.thinkingStart);
+    NSString *text = seconds < 60
+        ? [NSString stringWithFormat:L(@"thinking_seconds"), (long)seconds]
+        : [NSString stringWithFormat:L(@"thinking_minutes"), (long)(seconds / 60), (long)(seconds % 60)];
+    [self callJS:@"setStatus" args:@[text]];
+}
+
+- (NSString *)lastUserText {
+    NSArray *messages = self.conversation[@"messages"];
+    for (NSInteger i = (NSInteger)messages.count - 1; i >= 0; i--) {
+        NSDictionary *message = messages[(NSUInteger)i];
+        if ([message[@"role"] isEqualToString:@"user"] && [message[@"text"] isKindOfClass:[NSString class]]) {
+            return message[@"text"];
+        }
+    }
+    return @"";
+}
+
+// An image request goes to an image-capable Gemini model for that one reply. The model the person chose is kept.
+- (NSString *)modelIdForThisRequest {
+    NSString *selected = [self.model copy];
+    if ([Provider forModelId:selected] != AIProviderGemini) return selected;
+    if ([selected rangeOfString:@"image"].location != NSNotFound) return selected;
+
+    NSString *text = [[self lastUserText] lowercaseString];
+    NSArray *triggers = @[@"vẽ", @"tạo ảnh", @"tạo hình", @"làm ảnh", @"generate an image", @"generate image", @"create an image", @"draw me"];
+    BOOL wantsImage = NO;
+    for (NSString *trigger in triggers) {
+        if ([text containsString:trigger]) { wantsImage = YES; break; }
+    }
+    if (!wantsImage) return selected;
+
+    for (NSDictionary *model in [ModelStore visibleModelsForProvider:AIProviderGemini]) {
+        NSString *modelId = model[@"id"];
+        if (![modelId isKindOfClass:[NSString class]]) continue;
+        if ([modelId rangeOfString:@"image"].location != NSNotFound && [ModelStore isModelAvailableNow:modelId]) {
+            [DiagnosticLog log:@"image request: this reply uses %@", modelId];
+            return modelId;
+        }
+    }
+    return selected;
+}
+
+// True when the request needs calculation, charts or data processing: then Gemini may run Python.
+- (BOOL)wantsCodeExecution {
+    NSString *text = [[self lastUserText] lowercaseString];
+    NSArray *signals = @[@"chạy", @"tính", @"biểu đồ", @"python", @"vẽ đồ thị", @"plot", @"chart", @"calculate",
+                         @"compute", @"simulate", @"mô phỏng", @"csv", @"phân tích dữ liệu", @"thống kê"];
+    for (NSString *signal in signals) {
+        if ([text containsString:signal]) return YES;
+    }
+    return NO;
+}
+
+// Finds ```file:NAME blocks in a reply, saves each as a file attachment and returns the reply without those blocks.
+- (NSString *)extractFileBlocksFromReply:(NSString *)reply intoAttachments:(NSMutableArray *)out {
+    if (reply.length == 0) return reply;
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSMutableArray *kept = [NSMutableArray array];
+    NSString *currentName = nil;
+    NSMutableArray *body = nil;
+    for (NSString *line in [reply componentsSeparatedByString:@"\n"]) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:ws];
+        if (!currentName && [trimmed hasPrefix:@"```file:"]) {
+            currentName = [[trimmed substringFromIndex:7] stringByTrimmingCharactersInSet:ws];
+            body = [NSMutableArray array];
+            continue;
+        }
+        if (currentName) {
+            if ([trimmed isEqualToString:@"```"]) {
+                NSDictionary *attachment = [self saveGeneratedFileNamed:currentName
+                                                                content:[body componentsJoinedByString:@"\n"]];
+                if (attachment) {
+                    [out addObject:attachment];
+                } else {
+                    [kept addObject:[NSString stringWithFormat:@"(Không tạo được tệp %@)", currentName]];
+                }
+                currentName = nil;
+                body = nil;
+            } else {
+                [body addObject:line];
+            }
+            continue;
+        }
+        [kept addObject:line];
+    }
+    if (currentName) [kept addObjectsFromArray:body];   // a block that never closed: keep its text
+    return [kept componentsJoinedByString:@"\n"];
+}
+
+- (NSDictionary *)saveGeneratedFileNamed:(NSString *)rawName content:(NSString *)content {
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSString *name = [rawName stringByTrimmingCharactersInSet:ws];
+    name = [[name componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/\\:"]]
+            componentsJoinedByString:@"-"];
+    if (name.length == 0) name = @"tep.txt";
+    if (name.length > 80) name = [name substringFromIndex:name.length - 80];
+    NSString *ext = [[name pathExtension] lowercaseString];
+    NSData *data = nil;
+    NSString *finalName = name;
+
+    if ([ext isEqualToString:@"docx"]) {
+        NSError *error = nil;
+        NSURL *url = [OfficeExport writeWordFile:content error:&error];
+        data = url ? [NSData dataWithContentsOfURL:url] : nil;
+        if (url) [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+        if (!data) [DiagnosticLog log:@"generated docx failed: %@", error.localizedDescription ?: @"unknown"];
+    } else {
+        NSSet *textExtensions = [NSSet setWithObjects:@"txt", @"md", @"csv", @"json", @"html", @"htm", @"xml", @"py",
+                                 @"js", @"swift", @"m", @"h", @"c", @"cpp", @"java", @"sql", @"sh", @"yaml", @"yml",
+                                 @"css", @"tex", @"log", nil];
+        if (![textExtensions containsObject:ext]) {
+            // .xlsx, .pptx, .pdf and other binary formats are not produced yet: keep the text as a .txt file.
+            finalName = [[name stringByDeletingPathExtension] stringByAppendingString:@".txt"];
+            [DiagnosticLog log:@"generated file %@ saved as text: format not supported yet", name];
+        }
+        data = [content dataUsingEncoding:NSUTF8StringEncoding];
+    }
+    if (data.length == 0) return nil;
+
+    NSString *errorKey = nil;
+    return [AttachmentStore importFileData:data name:finalName conversation:self.conversation[@"id"] errorKey:&errorKey];
+}
+
+- (void)shareFileForAttachmentId:(NSString *)attachmentId {
+    if (![attachmentId isKindOfClass:[NSString class]] || attachmentId.length == 0) return;
+    NSString *cid = self.conversation[@"id"];
+    for (NSDictionary *message in self.conversation[@"messages"]) {
+        NSArray *atts = message[@"attachments"];
+        if (![atts isKindOfClass:[NSArray class]]) continue;
+        for (NSDictionary *att in atts) {
+            if (![att[@"id"] isEqualToString:attachmentId] || ![att[@"kind"] isEqualToString:@"file"]) continue;
+            NSString *path = [AttachmentStore pathForFile:att[@"file"] conversation:cid];
+            if (!path) return;
+            // Share a copy with the real name, so the person sees "bao-cao.docx" and not a UUID.
+            NSString *shareDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ClaudeMiniShare"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:shareDir withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *shareName = [att[@"name"] isKindOfClass:[NSString class]] ? att[@"name"] : @"tep";
+            NSString *sharePath = [shareDir stringByAppendingPathComponent:shareName];
+            [[NSFileManager defaultManager] removeItemAtPath:sharePath error:nil];
+            [[NSFileManager defaultManager] copyItemAtPath:path toPath:sharePath error:nil];
+            [self.view endEditing:YES];
+            UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:sharePath]] applicationActivities:nil];
+            activity.popoverPresentationController.sourceView = self.view;
+            activity.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+            [self presentViewController:activity animated:YES completion:nil];
+            return;
+        }
+    }
 }
 
 - (NSString *)effectiveSystemPrompt {
@@ -3133,13 +3302,19 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     AIReasoningLevel rLevel = [AppSettings reasoningLevel];
     NSString *responseDirective = nil;
     if (rLevel == AIReasoningLevelLow) {
-        responseDirective = @"\n\n[TURBO FAST MODE] Answer immediately, concisely, and directly to the point with maximum speed and zero filler.";
+        responseDirective = @"\n\n[FAST MODE] Answer directly and concisely. Skip optional detail.";
     } else if (rLevel == AIReasoningLevelMedium) {
-        responseDirective = @"\n\n[FAST BALANCED MODE] Give a fast, clear, well-structured answer with practical accuracy and no fluff.";
+        responseDirective = @"\n\n[BALANCED MODE] Think before answering. Give a complete, well-structured answer with the key details.";
+    } else if (rLevel == AIReasoningLevelHigh) {
+        responseDirective = @"\n\n[DEEP REASONING MODE] Think through the problem step by step and check the reasoning for errors before concluding. Give a thorough, detailed answer that covers edge cases and explains why, not only what.";
+    } else if (rLevel == AIReasoningLevelVeryHigh) {
+        responseDirective = @"\n\n[VERY DEEP REASONING MODE] Analyse the problem from several angles, compare the options, and verify each conclusion before stating it. Give a long, precise, detailed answer with concrete examples and numbers where they apply. If you find a mistake while reasoning, correct it explicitly.";
     } else {
-        responseDirective = @"\n\n[MAXIMUM REASONING & CREATIVITY MODE] Think deeply, explore sharp/creative solutions, identify exact root causes, verify edge cases, and deliver thorough, complete, actionable details without truncating or skipping steps.";
+        responseDirective = @"\n\n[MAXIMUM REASONING MODE] Take as long as needed. Explore alternative solutions, test each against the requirements, and self-review the final answer for errors, fixing them before presenting it. Give the most complete, precise and detailed answer possible, with full steps, edge cases, verification and a clear summary at the end.";
     }
     selectedPrompt = [selectedPrompt stringByAppendingString:responseDirective];
+    selectedPrompt = [selectedPrompt stringByAppendingString:
+        @"\n\n[FILE OUTPUT] When the person needs a file to download (Word, text, CSV, HTML, source code...), put the complete file content inside one block that starts with three backticks followed by file:FILENAME.EXT and ends with three backticks, for example: ```file:bao-cao.docx on its own line, then the content, then ``` on its own line. Supported: .docx, .txt, .md, .csv, .json, .html, and common source-code extensions. Outside that block, write one short sentence saying what the file contains. Do not use this block for ordinary answers."];
 
     if (codingTask) {
         NSString *codingDirective = @"\n\n[CODING RESPONSE REQUIREMENTS] Deliver complete, compilable code for every requested function or changed file section with all required declarations/imports. Never replace code with ellipses, placeholders, TODOs, or pseudo-code. When continuing across chunks, resume from the exact next character without repeating already-emitted text.";
@@ -3181,7 +3356,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (void)launchRequestStreaming:(BOOL)useStreaming {
     self.attemptIsStreaming = useStreaming;
     AIProvider provider = [Provider forModelId:self.model];
-    NSString *modelId = [self.model copy];
+    NSString *modelId = [self modelIdForThisRequest];
     NSString *accumulated = [self.longReplyAccumulator copy];
 
     __weak typeof(self) weakSelf = self;
@@ -3222,6 +3397,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                 [(id)stream setValue:@(fastEnabled) forKey:@"useFastSpeed"];
             }
             stream.useStreaming = useStreaming;
+            if ([stream isKindOfClass:[GeminiStream class]]) {
+                ((GeminiStream *)stream).allowCodeExecution = [strongMe wantsCodeExecution];
+            }
             strongMe.stream = stream;
             if (!strongMe.streamGeneratedAttachments) strongMe.streamGeneratedAttachments = [NSMutableArray array];
             strongMe.requestStartTime = CFAbsoluteTimeGetCurrent();
@@ -3233,6 +3411,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             stream.onDelta = ^(NSString *text) {
                 ChatViewController *inner = weakSelf;
                 if (!inner || inner.stream != weakStream || text.length == 0) return;
+                [inner stopThinkingTimer];
 
                 NSString *cleanText = text;
                 if (!checkedOverlap && inner.longReplyAccumulator.length > 0) {
@@ -3429,6 +3608,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     NSString *completeReply = self.longReplyAccumulator.length > 0
         ? [self.longReplyAccumulator stringByAppendingString:(partial ?: @"")]
         : partial;
+    if (!self.streamGeneratedAttachments) self.streamGeneratedAttachments = [NSMutableArray array];
+    NSMutableArray *fileAttachments = [NSMutableArray array];
+    completeReply = [self extractFileBlocksFromReply:completeReply intoAttachments:fileAttachments];
+    [self.streamGeneratedAttachments addObjectsFromArray:fileAttachments];
     NSArray *generatedAttachments = [self.streamGeneratedAttachments copy] ?: @[];
     if (completeReply.length > 0 || generatedAttachments.count > 0) {
         [self appendAssistantMessage:completeReply attachments:generatedAttachments];

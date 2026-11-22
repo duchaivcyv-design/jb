@@ -195,6 +195,23 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
     return UIImageJPEGRepresentation(flat, quality);
 }
 
++ (NSDictionary *)importFileData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey {
+    if (data.length == 0) { if (errorKey) *errorKey = @"att_err_empty"; return nil; }
+    if (data.length > 20 * 1024 * 1024) { if (errorKey) *errorKey = @"att_err_too_large"; return nil; }
+    NSString *dir = [self directoryForConversation:conversationId create:YES];
+    if (!dir) { if (errorKey) *errorKey = @"att_err_unreadable"; return nil; }
+    NSString *display = name.length > 0 ? name : @"tep.txt";
+    NSString *ext = [display pathExtension].lowercaseString;
+    NSString *attachmentId = [[NSUUID UUID] UUIDString];
+    NSString *file = ext.length > 0 ? [attachmentId stringByAppendingPathExtension:ext] : attachmentId;
+    if (![data writeToFile:[dir stringByAppendingPathComponent:file] options:NSDataWritingAtomic error:nil]) {
+        if (errorKey) *errorKey = @"att_err_unreadable";
+        return nil;
+    }
+    return @{ @"id": attachmentId, @"kind": @"file", @"name": display, @"mime": @"application/octet-stream",
+              @"file": file, @"bytes": @(data.length) };
+}
+
 + (NSDictionary *)importImageData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey {
     if (data.length == 0) { if (errorKey) *errorKey = @"att_err_empty"; return nil; }
     if (data.length > kMaxImageFileBytes) { if (errorKey) *errorKey = @"att_err_too_large"; return nil; }

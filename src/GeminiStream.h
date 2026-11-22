@@ -10,6 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (assign, nonatomic) BOOL useStreaming;
 @property (assign, nonatomic) BOOL useFastSpeed;
+@property (assign, nonatomic) BOOL allowCodeExecution;   // lets the model run Python on Google's side (calculations, charts, data)
 @property (assign, nonatomic) NSTimeInterval retryAfterSeconds;
 @property (copy, nonatomic, nullable) void (^onDelta)(NSString *text);
 @property (copy, nonatomic, nullable) void (^onImage)(NSData *data, NSString *mimeType);
