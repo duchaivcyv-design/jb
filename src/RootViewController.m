@@ -153,6 +153,8 @@ static NSString *GoogleSignedInTitle(void) {
     [self.googleButton setTitleColor:[Theme secondaryText] forState:UIControlStateDisabled];
     self.googleButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     [self.googleButton addTarget:self action:@selector(googleTapped) forControlEvents:UIControlEventTouchUpInside];
+    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(googleLongPressed:)];
+    [self.googleButton addGestureRecognizer:longPress];
     [self.scrollView addSubview:self.googleButton];
 
     self.googleHintLabel = [[UILabel alloc] init];
@@ -323,7 +325,8 @@ static NSString *GoogleSignedInTitle(void) {
     BOOL signedIn = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
     [self.googleButton setTitle:(signedIn ? GoogleSignedInTitle() : L(@"google_sign_in")) forState:UIControlStateNormal];
     [self.deleteButton setTitle:L(signedIn ? @"google_sign_out" : @"delete_key") forState:UIControlStateNormal];
-    self.googleHintLabel.text = [GoogleAuth isConfigured] ? L(@"google_quota_note") : L(@"google_not_configured");
+    NSString *base = [GoogleAuth isConfigured] ? L(@"google_quota_note") : L(@"google_not_configured");
+    self.googleHintLabel.text = [base stringByAppendingFormat:@"\n%@", L(@"google_edit_hint")];
     [self.view setNeedsLayout];
 }
 
@@ -331,7 +334,7 @@ static NSString *GoogleSignedInTitle(void) {
     if (self.busy) return;
     [self.view endEditing:YES];
     if (![GoogleAuth isConfigured]) {
-        [self setStatus:L(@"google_not_configured") kind:StatusError];
+        [self presentGoogleConfigEditorThenSignIn:YES];
         return;
     }
     self.busy = YES;
@@ -360,6 +363,53 @@ static NSString *GoogleSignedInTitle(void) {
         }
         [strongSelf verifyGoogleSession];
     }];
+}
+
+- (void)googleLongPressed:(UILongPressGestureRecognizer *)gesture {
+    if (gesture.state == UIGestureRecognizerStateBegan) [self presentGoogleConfigEditorThenSignIn:NO];
+}
+
+// Lets the person enter their own OAuth client ID and Cloud project ID, so no rebuild is needed.
+- (void)presentGoogleConfigEditorThenSignIn:(BOOL)signInAfterSave {
+    if (self.busy) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:L(@"google_config_title")
+                                                                   message:L(@"google_config_msg")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = L(@"google_config_client_placeholder");
+        field.text = [GoogleAuth clientID];
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = L(@"google_config_project_placeholder");
+        field.text = [GoogleAuth cloudProjectID];
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+
+    __weak typeof(self) weakSelf = self;
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"google_config_save") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        RootViewController *strongSelf = weakSelf;
+        UIAlertController *strongAlert = weakAlert;
+        if (!strongSelf || !strongAlert) return;
+        NSString *clientID = strongAlert.textFields[0].text ?: @"";
+        NSString *projectID = strongAlert.textFields[1].text ?: @"";
+        if (![GoogleAuth isValidClientID:clientID]) {
+            [strongSelf setStatus:L(@"google_bad_client_id") kind:StatusError];
+            [strongSelf.view setNeedsLayout];
+            return;
+        }
+        [GoogleAuth saveClientID:clientID projectID:projectID];
+        [strongSelf setStatus:@"" kind:StatusNeutral];
+        [strongSelf updateGoogleButton];
+        if (signInAfterSave) [strongSelf googleTapped];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 // Gemini has to accept the Google token before the sign-in is kept; otherwise it is removed again.
