@@ -1,8 +1,11 @@
 #import "KeyStore.h"
 #import "KeyTier.h"
+#import "GoogleAuth.h"
 #import <Security/Security.h>
 
 static NSString *const kKeyService = @"com.puc.claudemini";
+// YES when Gemini should use the Google account (set by the person in the sign-in screen).
+static NSString *const kGeminiGoogleModeKey = @"gemini.useGoogleSignIn";
 
 // The Gemini names are the ones earlier versions used, so an existing key keeps working after an update.
 static NSString *AccountFor(AIProvider provider) {
@@ -47,6 +50,9 @@ static NSMutableDictionary *KeyCache(void) {
 }
 
 + (NSString *)loadKeyForProvider:(AIProvider)provider {
+    if (provider == AIProviderGemini && [self geminiUsesGoogleSignIn]) {
+        return [GoogleAuth accessTokenNonBlocking];   // not cached: the token changes every hour
+    }
     NSNumber *cacheKey = @(provider);
     @synchronized (KeyCache()) {
         id cached = KeyCache()[cacheKey];
@@ -87,7 +93,11 @@ static NSMutableDictionary *KeyCache(void) {
 + (BOOL)saveKey:(NSString *)key forProvider:(AIProvider)provider {
     if (key.length == 0) return NO;
     [self forgetCachedKeyForProvider:provider];
-    if (provider == AIProviderGemini) [KeyTier invalidateGeminiDetection];   // a new key may be free or paid: detect again
+    if (provider == AIProviderGemini) {
+        [KeyTier invalidateGeminiDetection];   // a new key may be free or paid: detect again
+        // Saving an API key means the person wants to use it now, not the Google account.
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kGeminiGoogleModeKey];
+    }
     NSData *data = [key dataUsingEncoding:NSUTF8StringEncoding];
 
     SecItemDelete((__bridge CFDictionaryRef)[self baseQueryFor:provider]);
@@ -119,7 +129,37 @@ static NSMutableDictionary *KeyCache(void) {
 }
 
 + (BOOL)hasKeyForProvider:(AIProvider)provider {
+    if (provider == AIProviderGemini && [self geminiUsesGoogleSignIn]) return YES;   // token may not be loaded yet
     return [self loadKeyForProvider:provider].length > 0;
+}
+
++ (BOOL)geminiUsesGoogleSignIn {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kGeminiGoogleModeKey] && [GoogleAuth isSignedIn];
+}
+
++ (void)setGeminiUsesGoogleSignIn:(BOOL)useGoogle {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:useGoogle forKey:kGeminiGoogleModeKey];
+    [defaults synchronize];
+    @synchronized (KeyCache()) { [KeyCache() removeAllObjects]; }
+    [KeyTier invalidateGeminiDetection];   // the account may be free or paid: detect again
+}
+
++ (NSString *)freshKeyForProvider:(AIProvider)provider {
+    if (provider == AIProviderGemini && [self geminiUsesGoogleSignIn]) {
+        return [GoogleAuth accessTokenBlocking];
+    }
+    return [self loadKeyForProvider:provider];
+}
+
++ (void)applyGeminiCredential:(NSString *)credential toRequest:(NSMutableURLRequest *)request {
+    // Gemini API keys always start with "AIza". Anything else is an OAuth access token from Google sign-in.
+    BOOL isApiKey = [credential hasPrefix:@"AIza"];
+    if (!isApiKey && credential.length > 0 && [GoogleAuth isSignedIn]) {
+        [request setValue:[@"Bearer " stringByAppendingString:credential] forHTTPHeaderField:@"Authorization"];
+    } else {
+        [request setValue:credential forHTTPHeaderField:@"x-goog-api-key"];
+    }
 }
 
 + (BOOL)hasAnyKey {

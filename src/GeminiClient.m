@@ -1,4 +1,5 @@
 #import "GeminiClient.h"
+#import "KeyStore.h"
 
 static NSString *const kGeminiModelsURL = @"https://generativelanguage.googleapis.com/v1beta/models";
 static const NSInteger kMaxModelPages = 10;
@@ -31,7 +32,7 @@ static NSMutableURLRequest *ModelsRequest(NSString *key, NSString *pageToken) {
                                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                             timeoutInterval:15.0];
     request.HTTPMethod = @"GET";
-    [request setValue:key forHTTPHeaderField:@"x-goog-api-key"];
+    [KeyStore applyGeminiCredential:key toRequest:request];
     return request;
 }
 

@@ -1,4 +1,26 @@
-# ClaudeMini 0.7.3 — Chat Gemini và Claude, sửa tin cũ, video, tạo ảnh và xuất Word/TXT
+# ClaudeMini 0.8.0 — Đăng nhập Google hoặc API key, và sửa lỗi treo
+
+## Mới ở 0.8.0
+- **Đăng nhập bằng tài khoản Google** cho Gemini, bên cạnh API key. Trên màn hình nhập key có nút **Đăng nhập bằng Google** (chỉ hiện khi bản build có client ID, xem bên dưới). Đăng nhập xong, app kiểm tra Gemini có chấp nhận quyền đó không; nếu không, app tự đăng xuất Google và báo lỗi (HTTP) để bạn biết.
+- Khi lưu một API key mới, app chuyển sang dùng key đó. Khi đăng nhập Google, app dùng tài khoản Google. Nút đăng xuất ở màn hình này sẽ xóa đúng cái đang dùng.
+- Token của Google được làm mới tự động khi app mở lại, và ngay trước mỗi yêu cầu.
+- **Sửa lỗi treo không trả lời:** khi model suy nghĩ quá lâu (không gửi dữ liệu trong 180 giây), trước đây app tự thử lại âm thầm tối đa 14 lần, mỗi lần chờ thêm 180 giây, nên trông như treo gần 40 phút. Bây giờ app báo lỗi ngay sau lần chờ đầu tiên, với gợi ý hạ mức suy luận trong Cài đặt. Các lỗi mạng khác vẫn được thử lại nhưng tối đa 3 lần.
+
+### Cách bật đăng nhập Google (làm một lần)
+1. Trong Google Cloud Console, tạo một project, bật **Generative Language API** (Gemini API), và cấu hình **OAuth consent screen** (User type: External, thêm email của bạn vào Test users).
+2. Tạo **OAuth client ID** loại **iOS**, với Bundle ID `com.puc.claudemini`. Copy client ID dạng `123456-abc.apps.googleusercontent.com`.
+3. Trong repo GitHub của bạn: Settings › Secrets and variables › Actions › tab **Variables**, tạo `GOOGLE_OAUTH_CLIENT_ID` với giá trị trên. Chạy lại workflow build.
+4. Nếu không đặt biến này, bản build vẫn chạy bình thường bằng API key; chỉ không có nút Google.
+
+### Lưu ý quan trọng
+- Yêu cầu đăng nhập Google đi qua **project Google Cloud của client ID** chứ không phải hạn mức cá nhân của tài khoản đăng nhập. Nghĩa là hạn mức tính vào project bạn tạo ra.
+- Phạm vi (scope) của Gemini khi đăng nhập bằng OAuth được khai báo trong `src/GoogleAuth.m` (`kScopes`). Nếu đăng nhập được nhưng Gemini báo 403, đó là chỗ cần kiểm tra trước.
+- Bản 0.8.0 được viết mà chưa biên dịch và chưa chạy trên máy thật. Hãy build và thử đăng nhập một lần, rồi xem **Cài đặt › Nhật ký chẩn đoán** nếu có lỗi.
+
+---
+
+## Phiên bản trước
+
 
 🧠 AI — Suy luận & Tạo nội dung
 

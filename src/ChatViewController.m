@@ -3182,7 +3182,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (void)launchRequestStreaming:(BOOL)useStreaming {
     self.attemptIsStreaming = useStreaming;
     AIProvider provider = [Provider forModelId:self.model];
-    NSString *key = [KeyStore loadKeyForProvider:provider] ?: @"";
     NSString *modelId = [self.model copy];
     NSString *accumulated = [self.longReplyAccumulator copy];
 
@@ -3191,6 +3190,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         ChatViewController *me = weakSelf;
         if (!me || !me.streaming) return;
 
+        // Google sign-in: refresh the access token here, on a background queue, so a request never goes out with an expired one.
+        NSString *key = [KeyStore freshKeyForProvider:provider] ?: @"";
         NSMutableArray *turns = [[me buildTurns] mutableCopy];
         NSString *system = [me effectiveSystemPrompt];
 
@@ -3412,7 +3413,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         return;
     }
 
-    if (error == GeminiStreamErrorNetwork && partial.length == 0 && self.streamGeneratedAttachments.count == 0 && self.attemptIsStreaming) {
+    // A timed-out stream would only wait another full timeout in the single-request fallback, so it is not retried here.
+    BOOL timedOutStream = [detail containsString:@"-1001"];
+    if (error == GeminiStreamErrorNetwork && !timedOutStream && partial.length == 0 && self.streamGeneratedAttachments.count == 0 && self.attemptIsStreaming) {
         self.stream = nil;
         [DiagnosticLog log:@"live stream failed before any text: retrying immediately as a single request"];
         [self launchRequestStreaming:NO];
@@ -3536,7 +3539,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         case GeminiStreamErrorPermissionDenied: base = L(@"err_permission"); showDetail = YES; break;
         case GeminiStreamErrorModelNotFound:    base = L(@"err_model_not_found"); break;
         case GeminiStreamErrorRateLimited:      base = L(@"err_rate"); showDetail = YES; break;
-        case GeminiStreamErrorNetwork:          base = L(@"err_network"); showDetail = YES; break;
+        case GeminiStreamErrorNetwork:
+            base = [detail containsString:@"-1001"] ? L(@"err_timeout") : L(@"err_network");
+            showDetail = YES;
+            break;
         case GeminiStreamErrorBlocked:          base = L(@"err_blocked"); break;
         case GeminiStreamErrorEmptyReply:       base = L(@"err_empty_reply"); break;
         case GeminiStreamErrorTooLarge:         base = L(@"err_too_large"); break;

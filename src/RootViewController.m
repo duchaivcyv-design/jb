@@ -3,6 +3,7 @@
 #import "KeyStore.h"
 #import "GeminiClient.h"
 #import "ClaudeClient.h"
+#import "GoogleAuth.h"
 #import "Provider.h"
 #import "DiagnosticLog.h"
 #import "Strings.h"
@@ -12,6 +13,11 @@ typedef NS_ENUM(NSInteger, StatusKind) {
     StatusSuccess,
     StatusError
 };
+
+static NSString *GoogleSignedInTitle(void) {
+    NSString *email = [GoogleAuth accountEmail];
+    return email.length > 0 ? [NSString stringWithFormat:L(@"google_signed_in_as"), email] : L(@"google_signed_in_plain");
+}
 
 @interface RootViewController ()
 @property (strong, nonatomic) UIScrollView *scrollView;
@@ -23,6 +29,9 @@ typedef NS_ENUM(NSInteger, StatusKind) {
 @property (strong, nonatomic) UITextField *keyField;
 @property (strong, nonatomic) UIButton *pasteButton;
 @property (strong, nonatomic) UIButton *primaryButton;
+@property (strong, nonatomic) UILabel *orLabel;
+@property (strong, nonatomic) UIButton *googleButton;
+@property (strong, nonatomic) UILabel *googleHintLabel;
 @property (strong, nonatomic) UILabel *statusLabel;
 @property (strong, nonatomic) UIButton *deleteButton;
 @property (strong, nonatomic) UIButton *helpButton;
@@ -126,6 +135,34 @@ typedef NS_ENUM(NSInteger, StatusKind) {
     [self.primaryButton addTarget:self action:@selector(verifyTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.scrollView addSubview:self.primaryButton];
 
+    // Google sign-in (Gemini only; shown only when this build has a client ID)
+    self.orLabel = [[UILabel alloc] init];
+    self.orLabel.text = L(@"google_or");
+    self.orLabel.font = [UIFont systemFontOfSize:14];
+    self.orLabel.textColor = [Theme secondaryText];
+    self.orLabel.textAlignment = NSTextAlignmentCenter;
+    [self.scrollView addSubview:self.orLabel];
+
+    self.googleButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.googleButton.backgroundColor = [Theme surface];
+    self.googleButton.layer.cornerRadius = 12;
+    self.googleButton.layer.borderWidth = 1;
+    self.googleButton.layer.borderColor = [Theme border].CGColor;
+    self.googleButton.clipsToBounds = YES;
+    [self.googleButton setTitleColor:[Theme text] forState:UIControlStateNormal];
+    [self.googleButton setTitleColor:[Theme secondaryText] forState:UIControlStateDisabled];
+    self.googleButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    [self.googleButton addTarget:self action:@selector(googleTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.scrollView addSubview:self.googleButton];
+
+    self.googleHintLabel = [[UILabel alloc] init];
+    self.googleHintLabel.text = L(@"google_quota_note");
+    self.googleHintLabel.font = [UIFont systemFontOfSize:13];
+    self.googleHintLabel.textColor = [Theme secondaryText];
+    self.googleHintLabel.textAlignment = NSTextAlignmentCenter;
+    self.googleHintLabel.numberOfLines = 0;
+    [self.scrollView addSubview:self.googleHintLabel];
+
     // Status
     self.statusLabel = [[UILabel alloc] init];
     self.statusLabel.font = [UIFont systemFontOfSize:15];
@@ -218,6 +255,20 @@ typedef NS_ENUM(NSInteger, StatusKind) {
     self.primaryButton.frame = CGRectMake(x, y, contentWidth, 52);
     y += 52 + 14;
 
+    BOOL showGoogle = [self showsGoogleButton];
+    self.orLabel.hidden = !showGoogle;
+    self.googleButton.hidden = !showGoogle;
+    self.googleHintLabel.hidden = !showGoogle;
+    if (showGoogle) {
+        self.orLabel.frame = CGRectMake(x, y, contentWidth, 20);
+        y += 20 + 10;
+        self.googleButton.frame = CGRectMake(x, y, contentWidth, 52);
+        y += 52 + 8;
+        CGSize hintSize = [self.googleHintLabel sizeThatFits:CGSizeMake(contentWidth, CGFLOAT_MAX)];
+        self.googleHintLabel.frame = CGRectMake(x, y, contentWidth, ceil(hintSize.height));
+        y += ceil(hintSize.height) + 14;
+    }
+
     if (self.statusLabel.text.length > 0) {
         CGSize statusSize = [self.statusLabel sizeThatFits:CGSizeMake(contentWidth, CGFLOAT_MAX)];
         self.statusLabel.frame = CGRectMake(x, y, contentWidth, ceil(statusSize.height));
@@ -246,14 +297,98 @@ typedef NS_ENUM(NSInteger, StatusKind) {
 #pragma mark - State
 
 - (void)refreshSavedState {
-    NSString *saved = [KeyStore loadKeyForProvider:self.provider];
-    self.hasSavedKey = saved.length > 0;
+    self.hasSavedKey = [KeyStore hasKeyForProvider:self.provider];
+    BOOL usingGoogle = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
     if (self.hasSavedKey && self.statusLabel.text.length == 0) {
-        NSString *tail = saved.length > 4 ? [saved substringFromIndex:saved.length - 4] : saved;
-        [self setStatus:[NSString stringWithFormat:L(@"status_saved"), tail] kind:StatusNeutral];
+        if (usingGoogle) {
+            [self setStatus:GoogleSignedInTitle() kind:StatusNeutral];
+        } else {
+            NSString *saved = [KeyStore loadKeyForProvider:self.provider] ?: @"";
+            NSString *tail = saved.length > 4 ? [saved substringFromIndex:saved.length - 4] : saved;
+            [self setStatus:[NSString stringWithFormat:L(@"status_saved"), tail] kind:StatusNeutral];
+        }
     }
+    [self updateGoogleButton];
     [self updateButtonTitle];
     [self.view setNeedsLayout];
+}
+
+- (BOOL)showsGoogleButton {
+    return self.provider == AIProviderGemini && [GoogleAuth isConfigured];
+}
+
+- (void)updateGoogleButton {
+    BOOL signedIn = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
+    [self.googleButton setTitle:(signedIn ? GoogleSignedInTitle() : L(@"google_sign_in")) forState:UIControlStateNormal];
+    [self.deleteButton setTitle:L(signedIn ? @"google_sign_out" : @"delete_key") forState:UIControlStateNormal];
+    [self.view setNeedsLayout];
+}
+
+- (void)googleTapped {
+    if (self.busy) return;
+    [self.view endEditing:YES];
+    if (![GoogleAuth isConfigured]) {
+        [self setStatus:L(@"google_not_configured") kind:StatusError];
+        return;
+    }
+    self.busy = YES;
+    self.googleButton.enabled = NO;
+    [self setStatus:@"" kind:StatusNeutral];
+    [self updateButtonTitle];
+
+    __weak typeof(self) weakSelf = self;
+    [GoogleAuth signInFromViewController:self completion:^(NSError *error) {
+        RootViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        if (error != nil) {
+            strongSelf.busy = NO;
+            strongSelf.googleButton.enabled = YES;
+            BOOL cancelled = [error.domain isEqualToString:GoogleAuthErrorDomain] && error.code == GoogleAuthErrorCancelled;
+            if (!cancelled) {
+                NSString *message = error.code == GoogleAuthErrorNotConfigured
+                    ? L(@"google_not_configured")
+                    : [NSString stringWithFormat:L(@"google_failed"), error.localizedDescription ?: @""];
+                [strongSelf setStatus:message kind:StatusError];
+            }
+            [DiagnosticLog log:@"google sign-in ended: domain=%@ code=%ld", error.domain, (long)error.code];
+            [strongSelf updateButtonTitle];
+            [strongSelf.view setNeedsLayout];
+            return;
+        }
+        [strongSelf verifyGoogleSession];
+    }];
+}
+
+// Gemini has to accept the Google token before the sign-in is kept; otherwise it is removed again.
+- (void)verifyGoogleSession {
+    NSString *token = [GoogleAuth accessTokenNonBlocking] ?: @"";
+    __weak typeof(self) weakSelf = self;
+    [GeminiClient verifyKey:token completion:^(GeminiCheckResult result, NSInteger count, NSInteger httpStatus) {
+        RootViewController *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.busy = NO;
+        strongSelf.googleButton.enabled = YES;
+        [DiagnosticLog log:@"google session check: result=%ld http=%ld models=%ld", (long)result, (long)httpStatus, (long)count];
+
+        if (result == GeminiCheckOK) {
+            strongSelf.hasSavedKey = YES;
+            [strongSelf setStatus:[NSString stringWithFormat:L(@"status_ok"), (long)count] kind:StatusSuccess];
+            [strongSelf updateGoogleButton];
+            [strongSelf updateButtonTitle];
+            [strongSelf.view setNeedsLayout];
+            if (!strongSelf.embedded) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
+                });
+            }
+            return;
+        }
+        [GoogleAuth signOut];
+        [strongSelf setStatus:[NSString stringWithFormat:L(@"google_rejected"), (long)httpStatus] kind:StatusError];
+        [strongSelf updateGoogleButton];
+        [strongSelf updateButtonTitle];
+        [strongSelf.view setNeedsLayout];
+    }];
 }
 
 - (void)updateButtonTitle {
@@ -397,17 +532,20 @@ typedef NS_ENUM(NSInteger, StatusKind) {
 }
 
 - (void)deleteTapped {
+    BOOL signingOut = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
     UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:L(@"delete_confirm_title")
-                                            message:L(@"delete_confirm_msg")
+        [UIAlertController alertControllerWithTitle:L(signingOut ? @"google_sign_out" : @"delete_confirm_title")
+                                            message:L(signingOut ? @"google_sign_out_msg" : @"delete_confirm_msg")
                                      preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:L(@"delete") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         RootViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
-        [KeyStore deleteKeyForProvider:strongSelf.provider];
-        strongSelf.hasSavedKey = NO;
+        if (signingOut) [GoogleAuth signOut];
+        else [KeyStore deleteKeyForProvider:strongSelf.provider];
+        strongSelf.hasSavedKey = [KeyStore hasKeyForProvider:strongSelf.provider];
+        [strongSelf updateGoogleButton];
         [strongSelf setStatus:L(@"status_deleted") kind:StatusNeutral];
         [strongSelf updateButtonTitle];
         [strongSelf.view setNeedsLayout];

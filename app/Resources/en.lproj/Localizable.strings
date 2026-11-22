@@ -267,3 +267,16 @@
 "update_err_download" = "Download failed";
 "update_err_corrupt" = "The downloaded file is not valid. Please try again.";
 "update_err_save" = "Could not save the file";
+
+// Google sign-in and timeout message (0.8.0)
+"google_sign_in" = "Sign in with Google";
+"google_or" = "or";
+"google_signed_in_as" = "Using Google: %@";
+"google_signed_in_plain" = "Using a Google account";
+"google_not_configured" = "This build has no Google sign-in set up. Please use an API key.";
+"google_failed" = "Google sign-in failed: %@";
+"google_rejected" = "Google sign-in worked, but Gemini has not accepted this access (HTTP %ld). Signed out of Google. Use an API key, or try again later.";
+"google_quota_note" = "Requests go through the Google Cloud project of this build, so the quota is counted against that project.";
+"google_sign_out" = "Sign out of Google";
+"google_sign_out_msg" = "You will need to sign in with Google again to use Gemini.";
+"err_timeout" = "The model did not answer in time (it is usually thinking for too long). Try a lower reasoning level in Settings, then send again.";

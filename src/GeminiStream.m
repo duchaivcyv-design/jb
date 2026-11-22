@@ -2,6 +2,7 @@
 #import "AppSettings.h"
 #import "ModelStore.h"
 #import "Provider.h"
+#import "KeyStore.h"
 
 @interface GeminiStream () <NSURLSessionDataDelegate>
 @property (copy, nonatomic) NSString *key;
@@ -100,7 +101,7 @@
     if (self.useStreaming) {
         [request setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
     }
-    [request setValue:self.key forHTTPHeaderField:@"x-goog-api-key"];
+    [KeyStore applyGeminiCredential:self.key toRequest:request];
     return request;
 }
 
@@ -335,8 +336,13 @@ didReceiveResponse:(NSURLResponse *)response
     // Ép retry mạnh hơn khi chưa có text để vượt quá tải tạm thời / rớt kết nối
     NSInteger maxRetries = self.useFastSpeed ? 10 : 14;
     double maxBackoff = self.useFastSpeed ? 5.0 : 10.0;
-    if (!self.gotText && (isRateLimitOrOverload || (error != nil && self.status == 0 && error.code != NSURLErrorCancelled))) {
-        if (self.sameKeyRetryCount < maxRetries) {
+    // A timeout means no bytes arrived for the whole idle window (common while the model is still thinking).
+    // Retrying it silently only repeats the same long wait, so it fails at once with a clear message instead.
+    BOOL timedOut = (error != nil && error.code == NSURLErrorTimedOut);
+    BOOL networkDrop = (error != nil && self.status == 0 && error.code != NSURLErrorCancelled && !timedOut);
+    NSInteger retryLimit = isRateLimitOrOverload ? maxRetries : MIN(maxRetries, 3);
+    if (!self.gotText && (isRateLimitOrOverload || networkDrop)) {
+        if (self.sameKeyRetryCount < retryLimit) {
             self.sameKeyRetryCount++;
             NSTimeInterval backoffDelay = MIN(pow(1.45, self.sameKeyRetryCount), maxBackoff);
             NSTimeInterval jitter = (double)(arc4random_uniform(350)) / 1000.0;

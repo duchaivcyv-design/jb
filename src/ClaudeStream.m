@@ -347,8 +347,13 @@ didReceiveResponse:(NSURLResponse *)response
 
     NSInteger maxRetries = self.useFastSpeed ? 8 : 12;
     double maxBackoff = self.useFastSpeed ? 5.0 : 10.0;
-    if (!self.gotText && (isRateLimitOrOverload || (error != nil && self.status == 0 && error.code != NSURLErrorCancelled))) {
-        if (self.sameKeyRetryCount < maxRetries) {
+    // A timeout means no bytes arrived for the whole idle window (common while the model is still thinking).
+    // Retrying it silently only repeats the same long wait, so it fails at once with a clear message instead.
+    BOOL timedOut = (error != nil && error.code == NSURLErrorTimedOut);
+    BOOL networkDrop = (error != nil && self.status == 0 && error.code != NSURLErrorCancelled && !timedOut);
+    NSInteger retryLimit = isRateLimitOrOverload ? maxRetries : MIN(maxRetries, 3);
+    if (!self.gotText && (isRateLimitOrOverload || networkDrop)) {
+        if (self.sameKeyRetryCount < retryLimit) {
             self.sameKeyRetryCount++;
             NSTimeInterval backoffDelay = MIN(pow(1.45, self.sameKeyRetryCount), maxBackoff);
             NSTimeInterval jitter = (double)(arc4random_uniform(350)) / 1000.0;

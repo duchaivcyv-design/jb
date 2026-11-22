@@ -12,4 +12,15 @@
 + (BOOL)hasKeyForProvider:(AIProvider)provider;
 + (BOOL)hasAnyKey;
 
+// Gemini can use a Google account instead of an API key. This is the person's choice. It only takes effect
+// while the Google sign-in is still valid; otherwise the saved API key is used.
++ (BOOL)geminiUsesGoogleSignIn;
++ (void)setGeminiUsesGoogleSignIn:(BOOL)useGoogle;
+
+// Like loadKeyForProvider, but refreshes a Google access token first. BLOCKS: call it only from a background queue.
++ (NSString *)freshKeyForProvider:(AIProvider)provider;
+
+// Puts the Gemini credential on a request: an API key goes in x-goog-api-key, a Google token as a Bearer header.
++ (void)applyGeminiCredential:(NSString *)credential toRequest:(NSMutableURLRequest *)request;
+
 @end

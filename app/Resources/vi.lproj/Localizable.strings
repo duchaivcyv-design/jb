@@ -268,3 +268,16 @@
 "update_err_download" = "Tải file thất bại";
 "update_err_corrupt" = "File tải về không hợp lệ. Hãy thử lại.";
 "update_err_save" = "Không lưu được file";
+
+// Google sign-in and timeout message (0.8.0)
+"google_sign_in" = "Đăng nhập bằng Google";
+"google_or" = "hoặc";
+"google_signed_in_as" = "Đang dùng Google: %@";
+"google_signed_in_plain" = "Đang dùng tài khoản Google";
+"google_not_configured" = "Bản build này chưa cấu hình đăng nhập Google. Hãy dùng API key.";
+"google_failed" = "Đăng nhập Google không thành công: %@";
+"google_rejected" = "Đăng nhập Google được, nhưng Gemini chưa chấp nhận quyền truy cập (HTTP %ld). Đã đăng xuất Google. Hãy dùng API key hoặc thử lại sau.";
+"google_quota_note" = "Yêu cầu đi qua project Google Cloud gắn với bản build này, nên hạn mức tính theo project đó.";
+"google_sign_out" = "Đăng xuất Google";
+"google_sign_out_msg" = "Bạn sẽ phải đăng nhập lại bằng Google để dùng Gemini.";
+"err_timeout" = "Model không trả lời kịp thời gian chờ (thường do model suy nghĩ quá lâu). Thử hạ mức suy luận trong Cài đặt rồi gửi lại.";
