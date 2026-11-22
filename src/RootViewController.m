@@ -313,14 +313,17 @@ static NSString *GoogleSignedInTitle(void) {
     [self.view setNeedsLayout];
 }
 
+// Always shown for Gemini, so the person can see the option. Without a client ID in this build, tapping it
+// explains why instead of hiding the option.
 - (BOOL)showsGoogleButton {
-    return self.provider == AIProviderGemini && [GoogleAuth isConfigured];
+    return self.provider == AIProviderGemini;
 }
 
 - (void)updateGoogleButton {
     BOOL signedIn = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
     [self.googleButton setTitle:(signedIn ? GoogleSignedInTitle() : L(@"google_sign_in")) forState:UIControlStateNormal];
     [self.deleteButton setTitle:L(signedIn ? @"google_sign_out" : @"delete_key") forState:UIControlStateNormal];
+    self.googleHintLabel.text = [GoogleAuth isConfigured] ? L(@"google_quota_note") : L(@"google_not_configured");
     [self.view setNeedsLayout];
 }
 
