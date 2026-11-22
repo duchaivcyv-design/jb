@@ -20,6 +20,8 @@ static NSString *const kKeychainService   = @"com.puc.claudemini";
 static NSString *const kAccountRefresh    = @"google-refresh-token";
 static NSString *const kAccountAccess     = @"google-access-token";   // stored as "expiryEpoch|token"
 static NSString *const kEmailPrefKey      = @"googleAccountEmail";
+static NSString *const kPrefClientID      = @"googleOAuthClientID";   // entered in the app
+static NSString *const kPrefProjectID     = @"googleCloudProjectID";  // entered in the app
 static const NSTimeInterval kRefreshMargin = 300;   // refresh when less than 5 minutes of validity are left
 static const NSTimeInterval kRetryBackoff  = 30;    // do not retry a failed background refresh more often than this
 
@@ -49,6 +51,8 @@ static id gAuthAnchor;      // presentation anchor for the sign-in page, kept al
 #pragma mark - Helpers
 
 static NSString *ClientID(void) {
+    NSString *entered = [[NSUserDefaults standardUserDefaults] stringForKey:kPrefClientID];
+    if (entered.length > 0) return entered;
     id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"GoogleOAuthClientID"];
     if (![value isKindOfClass:[NSString class]]) return @"";
     return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -56,6 +60,8 @@ static NSString *ClientID(void) {
 
 // Cloud project that owns the quota for requests made with the user's token (set at build time).
 static NSString *CloudProjectID(void) {
+    NSString *entered = [[NSUserDefaults standardUserDefaults] stringForKey:kPrefProjectID];
+    if (entered.length > 0) return entered;
     id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"GoogleCloudProjectID"];
     if (![value isKindOfClass:[NSString class]]) return @"";
     return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -208,6 +214,25 @@ static void LoadAccessLocked(void) {
 
 + (NSString *)cloudProjectID {
     return CloudProjectID();
+}
+
++ (NSString *)clientID {
+    return ClientID();
+}
+
++ (BOOL)isValidClientID:(NSString *)candidate {
+    NSString *clean = [candidate stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [clean hasSuffix:kClientSuffix] && clean.length > kClientSuffix.length && ![clean containsString:@"/"] && ![clean containsString:@":"];
+}
+
++ (void)saveClientID:(NSString *)clientID projectID:(NSString *)projectID {
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSString *client = [clientID stringByTrimmingCharactersInSet:ws] ?: @"";
+    NSString *project = [projectID stringByTrimmingCharactersInSet:ws] ?: @"";
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (client.length > 0) [defaults setObject:client forKey:kPrefClientID]; else [defaults removeObjectForKey:kPrefClientID];
+    if (project.length > 0) [defaults setObject:project forKey:kPrefProjectID]; else [defaults removeObjectForKey:kPrefProjectID];
+    [defaults synchronize];
 }
 
 + (BOOL)isConfigured {
