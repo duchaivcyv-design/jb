@@ -1,6 +1,11 @@
 # ClaudeMini 0.8.0 — Đăng nhập Google hoặc API key, và sửa lỗi treo
 
 ## Mới ở 0.8.0
+- **Viết chữ mượt:** câu trả lời hiện đều từng chữ thay vì từng cụm lớn. Khi còn nhiều chữ chờ, tốc độ tự tăng để bắt kịp.
+- **Khi model im lặng giữa chừng:** sau 4 giây không có chữ mới, app hiện "Đang chờ phản hồi… N giây" để bạn biết app vẫn đang chờ, không bị treo.
+- **Tìm web thông minh hơn:** chỉ tìm khi câu hỏi cần thông tin mới (hôm nay, mới nhất, giá, tin tức...). Các câu hỏi thường không tìm nên trả lời nhanh hơn.
+- **Lỗi 403/400 do công cụ:** nếu key hoặc model từ chối tìm web hay chạy code, app tự thử lại đúng câu trả lời đó không kèm công cụ.
+- **Tệp zip:** giới hạn xuống 100 MB để giải nén nhanh hơn trên máy.
 - **Tạo file:** AI có thể đưa một file để tải về (Word `.docx`, `.txt`, `.md`, `.csv`, `.json`, `.html`, mã nguồn). File hiện thành một chip trong chat; chạm vào để chia sẻ hoặc lưu. `.xlsx`, `.pptx`, `.pdf` chưa tạo đúng định dạng; app lưu nội dung thành `.txt` và báo rõ.
 - **Chạy code (Gemini):** khi câu hỏi cần tính toán, vẽ biểu đồ hoặc xử lý dữ liệu, Gemini có thể chạy Python trên máy chủ của Google.
 - **Mức suy luận:** Thấp → Trung bình → Cao → Siêu cao → Tối đa. Mức càng cao, model suy nghĩ càng lâu, tự kiểm tra kỹ hơn và trả lời dài, chi tiết hơn. Trên đầu ra của đang suy nghĩ có đếm giây/phút. Với Gemini 3, API chỉ có 3 mức suy nghĩ nên Cao, Siêu cao và Tối đa cho cùng một mức thực tế.

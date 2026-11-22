@@ -174,7 +174,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
         }
     }
 
-    if ([AppSettings webSearchEnabled]) {
+    if (self.allowWebSearch && !self.disableTools) {
         payload[@"tools"] = @[@{ @"type": @"web_search_20250305", @"name": @"web_search", @"max_uses": @3 }];
     }
 

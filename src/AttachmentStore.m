@@ -21,7 +21,7 @@ static const NSUInteger kMaxVideoFrames = 4;
 // Ép trần cực cao theo yêu cầu (1 tỷ ký tự / 1GB) kết hợp streaming tránh OOM
 const NSUInteger kMaxTextFileBytes  = 1024ULL * 1024ULL * 1024ULL;
 const NSUInteger kMaxTextChars      = 1000000000ULL;               // 1 tỷ ký tự
-static const unsigned long long kMaxZipFileBytes = 500ULL * 1024ULL * 1024ULL;
+static const unsigned long long kMaxZipFileBytes = 100ULL * 1024ULL * 1024ULL;
 static const NSUInteger kStreamWriteChunkBytes = 1024 * 1024;      // Ghi từng khối 1MB
 
 // Ép mạnh chuỗi: gộp dòng trống liên tiếp (tối đa 1 dòng trống) và gộp nhiều space/tab liên tiếp thành 1 space

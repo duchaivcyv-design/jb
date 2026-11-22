@@ -453,6 +453,9 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (strong, nonatomic) NSMutableArray *pendingAttachments;
 @property (assign, nonatomic) NSInteger importsInFlight;
 @property (strong, nonatomic) NSTimer *thinkingTimer;
+@property (assign, nonatomic) BOOL toolsDisabledForReply;   // the provider refused search/code tools for this reply
+@property (assign, nonatomic) BOOL requestUsedTools;        // the current request carried a search or code tool
+@property (assign, nonatomic) BOOL searchAllowedForReply;   // search is on for the current request
 @property (assign, nonatomic) CFAbsoluteTime thinkingStart;
 @end
 
@@ -3106,6 +3109,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     self.streamRetryCount = 0;
     self.didRecoverModel404 = NO;
     self.didFallbackFromFastMode = NO;
+    self.toolsDisabledForReply = NO;
     self.streaming = YES;
     [self updateSendButton];
     [self startDeltaFlushTimer];
@@ -3278,6 +3282,18 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     }
 }
 
+// Search only when the question is about something that can change or must be checked.
+- (BOOL)wantsWebSearch {
+    NSString *text = [[self lastUserText] lowercaseString];
+    NSArray *signals = @[@"tìm", @"tra cứu", @"search", @"google", @"hôm nay", @"hôm qua", @"mới nhất", @"gần đây",
+                         @"hiện tại", @"bây giờ", @"tin tức", @"news", @"latest", @"today", @"current", @"price",
+                         @"giá", @"tỉ giá", @"thời tiết", @"kết quả", @"breaking", @"2025", @"2026"];
+    for (NSString *signal in signals) {
+        if ([text containsString:signal]) return YES;
+    }
+    return NO;
+}
+
 - (NSString *)effectiveSystemPrompt {
     NSString *own = self.conversation[@"system"];
     NSString *prompt = ([own isKindOfClass:[NSString class]] && own.length > 0) ? own : [AppSettings systemPrompt];
@@ -3320,7 +3336,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         NSString *codingDirective = @"\n\n[CODING RESPONSE REQUIREMENTS] Deliver complete, compilable code for every requested function or changed file section with all required declarations/imports. Never replace code with ellipses, placeholders, TODOs, or pseudo-code. When continuing across chunks, resume from the exact next character without repeating already-emitted text.";
         selectedPrompt = [selectedPrompt stringByAppendingString:codingDirective];
     }
-    if ([AppSettings webSearchEnabled]) {
+    if (self.searchAllowedForReply) {
         selectedPrompt = [selectedPrompt stringByAppendingString:@"\n\n[WEB SEARCH ENABLED] A real provider-managed web search tool is attached to this request. When the user explicitly asks to search, or the answer depends on current, recent, external, or verifiable information, you MUST invoke the search tool before answering and base factual claims on the returned results."];
     }
     return selectedPrompt;
@@ -3358,6 +3374,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     AIProvider provider = [Provider forModelId:self.model];
     NSString *modelId = [self modelIdForThisRequest];
     NSString *accumulated = [self.longReplyAccumulator copy];
+    // Decided here on the main queue: the setting, the question and the earlier refusals.
+    BOOL searchAllowed = [AppSettings webSearchEnabled] && !self.toolsDisabledForReply && [self wantsWebSearch];
+    BOOL codeAllowed = !self.toolsDisabledForReply && provider == AIProviderGemini && [self wantsCodeExecution];
+    self.searchAllowedForReply = searchAllowed;
 
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -3397,9 +3417,12 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                 [(id)stream setValue:@(fastEnabled) forKey:@"useFastSpeed"];
             }
             stream.useStreaming = useStreaming;
+            stream.allowWebSearch = searchAllowed;
+            stream.disableTools = strongMe.toolsDisabledForReply;
             if ([stream isKindOfClass:[GeminiStream class]]) {
-                ((GeminiStream *)stream).allowCodeExecution = [strongMe wantsCodeExecution];
+                ((GeminiStream *)stream).allowCodeExecution = codeAllowed;
             }
+            strongMe.requestUsedTools = !strongMe.toolsDisabledForReply && (searchAllowed || codeAllowed);
             strongMe.stream = stream;
             if (!strongMe.streamGeneratedAttachments) strongMe.streamGeneratedAttachments = [NSMutableArray array];
             strongMe.requestStartTime = CFAbsoluteTimeGetCurrent();
@@ -3520,6 +3543,22 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         [DiagnosticLog log:@"Fast mode rejected/limited; retrying at standard speed"];
         NSTimeInterval fallbackDelay = fastRateLimited ? MAX(0.3, MIN(5.0, fastRetryAfter)) : 0.15;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(fallbackDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
+        });
+        return;
+    }
+
+    // Search or code tools can be refused for a key, a model or a region (403 / 400). Retry this reply once without them.
+    BOOL toolsRejected = self.requestUsedTools && !self.toolsDisabledForReply && partial.length == 0 &&
+        self.streamGeneratedAttachments.count == 0 &&
+        (error == GeminiStreamErrorPermissionDenied || error == GeminiStreamErrorUnknown ||
+         status == 400 || status == 403 || status == 404);
+    if (toolsRejected) {
+        self.toolsDisabledForReply = YES;
+        self.requestUsedTools = NO;
+        self.stream = nil;
+        [DiagnosticLog log:@"tool request refused (HTTP %ld): retrying the reply without search and code tools", (long)status];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
         });
         return;

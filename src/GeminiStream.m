@@ -172,8 +172,9 @@
         payload[@"systemInstruction"] = @{ @"parts": @[ @{ @"text": self.system } ] };
     }
     NSMutableArray *tools = [NSMutableArray array];
-    if ([AppSettings webSearchEnabled] && !imageGenerationModel) [tools addObject:@{ @"google_search": @{} }];
-    if (self.allowCodeExecution && !imageGenerationModel) [tools addObject:@{ @"code_execution": @{} }];
+    BOOL toolsOK = !self.disableTools && !imageGenerationModel;
+    if (self.allowWebSearch && toolsOK) [tools addObject:@{ @"google_search": @{} }];
+    if (self.allowCodeExecution && toolsOK) [tools addObject:@{ @"code_execution": @{} }];
     if (tools.count > 0) payload[@"tools"] = tools;
 
     NSJSONWritingOptions opts = 0;
