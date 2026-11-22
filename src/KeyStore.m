@@ -157,6 +157,8 @@ static NSMutableDictionary *KeyCache(void) {
     BOOL isApiKey = [credential hasPrefix:@"AIza"];
     if (!isApiKey && credential.length > 0 && [GoogleAuth isSignedIn]) {
         [request setValue:[@"Bearer " stringByAppendingString:credential] forHTTPHeaderField:@"Authorization"];
+        NSString *projectID = [GoogleAuth cloudProjectID];
+        if (projectID.length > 0) [request setValue:projectID forHTTPHeaderField:@"x-goog-user-project"];
     } else {
         [request setValue:credential forHTTPHeaderField:@"x-goog-api-key"];
     }
