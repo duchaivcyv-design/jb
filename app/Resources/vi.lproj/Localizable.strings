@@ -381,3 +381,6 @@
 
 // Key paste check (0.8.0)
 "key_not_found" = "Không thấy API key (bắt đầu bằng AIza) trong nội dung đã dán. Hãy copy lại key từ aistudio.google.com.";
+
+// AQ. key explanation (0.8.0)
+"key_aq_prefix" = "Key bắt đầu bằng AQ. là loại key mới của AI Studio, và Gemini API đang từ chối loại này (lỗi 401). Hãy dùng key bắt đầu bằng AIza, hoặc đăng nhập bằng Google.";

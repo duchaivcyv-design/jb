@@ -380,3 +380,6 @@
 
 // Key paste check (0.8.0)
 "key_not_found" = "No API key (starting with AIza) was found in the pasted text. Copy the key again from aistudio.google.com.";
+
+// AQ. key explanation (0.8.0)
+"key_aq_prefix" = "Keys that start with AQ. are the new AI Studio type, and the Gemini API currently rejects them (error 401). Use a key that starts with AIza, or sign in with Google.";
