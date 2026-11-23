@@ -3,6 +3,7 @@
 #import "ChoicePopupViewController.h"
 #import "Theme.h"
 #import "KeyStore.h"
+#import "GoogleAuth.h"
 #import "AppSettings.h"
 #import "ConversationStore.h"
 #import "RootViewController.h"
@@ -914,7 +915,11 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
 #pragma mark - Helpers
 
 - (NSString *)maskedKeyFor:(AIProvider)provider {
-    NSString *key = [KeyStore loadKeyForProvider:provider];
+    if (provider == AIProviderGemini && [KeyStore geminiUsesGoogleAccount]) {
+        NSString *email = [GoogleAuth accountEmail];
+        return [NSString stringWithFormat:L(@"google_signed_in_as"), email.length > 0 ? email : @"Google"];
+    }
+    NSString *key = [KeyStore loadRawKeyForProvider:provider];
     if (key.length == 0) return L(@"api_key_none");
     NSString *tail = key.length > 4 ? [key substringFromIndex:key.length - 4] : key;
     return [@"\u2022\u2022\u2022\u2022" stringByAppendingString:tail];

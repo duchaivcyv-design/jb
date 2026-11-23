@@ -2,6 +2,7 @@
 #import "AppSettings.h"
 #import "ModelStore.h"
 #import "Provider.h"
+#import "GoogleAuth.h"
 
 @interface GeminiStream () <NSURLSessionDataDelegate>
 @property (copy, nonatomic) NSString *key;
@@ -166,6 +167,34 @@
 }
 
 - (void)executeForcedRequest:(NSMutableURLRequest *)request {
+    if (self.finished || self.cancelled || !request) return;
+    __weak typeof(self) weakSelf = self;
+    [GoogleAuth authorizeRequest:request key:self.key completion:^(NSError *authError) {
+        GeminiStream *strongSelf = weakSelf;
+        if (!strongSelf || strongSelf.finished || strongSelf.cancelled) return;
+        if (authError != nil) {
+            strongSelf.finished = YES;
+            [strongSelf stopWatchdog];
+            [strongSelf.session invalidateAndCancel];
+            strongSelf.session = nil;
+            strongSelf.task = nil;
+            BOOL signInNeeded = [authError.domain isEqualToString:GoogleAuthErrorDomain] &&
+                                authError.code == GoogleAuthErrorSignInRequired;
+            void (^finish)(GeminiStreamError, NSInteger, NSString *) = strongSelf.onFinish;
+            NSString *detail = [GoogleAuth messageForError:authError];
+            strongSelf.onDelta = nil;
+            strongSelf.onImage = nil;
+            strongSelf.onUsage = nil;
+            strongSelf.onFinish = nil;
+            if (finish) finish(signInNeeded ? GeminiStreamErrorInvalidKey : GeminiStreamErrorNetwork,
+                               signInNeeded ? 401 : 0, detail);
+            return;
+        }
+        [strongSelf executeAuthorizedRequest:request];
+    }];
+}
+
+- (void)executeAuthorizedRequest:(NSMutableURLRequest *)request {
     if (self.finished || self.cancelled || !request) return;
 
     if (self.session) {

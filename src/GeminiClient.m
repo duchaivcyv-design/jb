@@ -1,4 +1,5 @@
 #import "GeminiClient.h"
+#import "GoogleAuth.h"
 
 static NSString *const kGeminiModelsURL = @"https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -14,6 +15,21 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
     if (status == 400 || status == 401 || status == 403) return GeminiCheckInvalidKey;
     if (status == 429) return GeminiCheckRateLimited;
     return GeminiCheckUnknown;
+}
+
+// Adds either the existing API-key header or a refreshed Google OAuth Bearer token before sending.
+static void SendGeminiRequest(NSMutableURLRequest *request, NSString *key,
+                              void (^handler)(NSData *, NSURLResponse *, NSError *)) {
+    [GoogleAuth authorizeRequest:request key:key completion:^(NSError *authError) {
+        if (authError != nil) { handler(nil, nil, authError); return; }
+        [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:handler] resume];
+    }];
+}
+
+static GeminiCheckResult ResultForAuthError(NSError *error) {
+    if ([error.domain isEqualToString:GoogleAuthErrorDomain] &&
+        error.code == GoogleAuthErrorSignInRequired) return GeminiCheckInvalidKey;
+    return GeminiCheckNetworkError;
 }
 
 @implementation GeminiClient
@@ -34,17 +50,13 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
                                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                             timeoutInterval:20];
     request.HTTPMethod = @"GET";
-    [request setValue:key forHTTPHeaderField:@"x-goog-api-key"];
-
-    NSURLSessionDataTask *task =
-        [[NSURLSession sharedSession] dataTaskWithRequest:request
-                                        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    SendGeminiRequest(request, key, ^(NSData *data, NSURLResponse *response, NSError *error) {
         GeminiCheckResult result = GeminiCheckUnknown;
         NSInteger count = 0;
         NSInteger status = 0;
 
         if (error != nil) {
-            result = GeminiCheckNetworkError;
+            result = ResultForAuthError(error);
         } else {
             status = [(NSHTTPURLResponse *)response statusCode];
             result = ResultForStatus(status);
@@ -64,8 +76,7 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(result, count, status);
         });
-    }];
-    [task resume];
+    });
 }
 
 #pragma mark - Model list
@@ -105,13 +116,10 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
                                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                             timeoutInterval:20];
     request.HTTPMethod = @"GET";
-    [request setValue:key forHTTPHeaderField:@"x-goog-api-key"];
-
-    NSURLSessionDataTask *task =
-        [[NSURLSession sharedSession] dataTaskWithRequest:request
-                                        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    SendGeminiRequest(request, key, ^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error != nil) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(@[], GeminiCheckNetworkError); });
+            GeminiCheckResult authResult = ResultForAuthError(error);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(@[], authResult); });
             return;
         }
         NSInteger status = [(NSHTTPURLResponse *)response statusCode];
@@ -151,8 +159,7 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
             return [b[@"id"] compare:a[@"id"] options:NSNumericSearch];   // newest/highest first
         }];
         dispatch_async(dispatch_get_main_queue(), ^{ completion(sorted, GeminiCheckOK); });
-    }];
-    [task resume];
+    });
 }
 
 @end

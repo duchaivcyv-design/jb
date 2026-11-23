@@ -352,3 +352,26 @@
 "font_rounded" = "SF Rounded";
 "font_weight_title" = "Độ đậm chữ";
 "font_weight_normal" = "Bình thường";
+
+
+/* Google OAuth sign-in */
+"google_sign_in" = "Đăng nhập bằng Google";
+"google_sign_in_again" = "Đăng nhập lại bằng Google";
+"google_sign_out" = "Đăng xuất Google";
+"google_sign_out_confirm" = "Đăng xuất tài khoản Google khỏi ứng dụng này?";
+"google_signed_in_as" = "Đã đăng nhập Google: %@";
+"google_setup_title" = "Đăng nhập Google";
+"google_setup_msg" = "Dán OAuth Client ID (loại iOS) của dự án Google Cloud đã bật Generative Language API. Project ID có thể để trống.";
+"google_client_id_placeholder" = "Client ID (…apps.googleusercontent.com)";
+"google_project_placeholder" = "Project ID (tuỳ chọn)";
+"google_continue" = "Tiếp tục";
+"google_err_client_id" = "Client ID không hợp lệ. Nó phải có dạng 123-abc.apps.googleusercontent.com.";
+"google_err_start" = "Không mở được trang đăng nhập Google.";
+"google_err_state" = "Phản hồi đăng nhập không khớp. Hãy thử lại.";
+"google_err_exchange" = "Google không cấp được quyền truy cập (%@).";
+"google_err_no_refresh" = "Google không trả về refresh token. Hãy đăng nhập lại và đồng ý mọi quyền.";
+"google_err_expired" = "Phiên đăng nhập Google đã hết hạn hoặc bị thu hồi. Hãy đăng nhập lại.";
+"google_err_network" = "Không kết nối được tới Google. Kiểm tra mạng rồi thử lại.";
+"google_status_denied" = "Google từ chối truy cập Gemini (HTTP %ld). Kiểm tra đã bật Generative Language API, email là test user và Project ID đúng.";
+"err_google_auth" = "Đăng nhập Google không còn hiệu lực. Vào Cài đặt › API key Gemini và đăng nhập lại.";
+"err_google_permission" = "Tài khoản/dự án Google không có quyền dùng Gemini. Kiểm tra đã bật Generative Language API và Project ID.";

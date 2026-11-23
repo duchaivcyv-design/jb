@@ -1,4 +1,5 @@
 #import "KeyTier.h"
+#import "GoogleAuth.h"
 #import "KeyStore.h"
 #import "DiagnosticLog.h"
 
@@ -127,12 +128,17 @@ static BOOL gDetecting = NO;
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                        timeoutInterval:25];
     request.HTTPMethod = @"POST";
-    [request setValue:key forHTTPHeaderField:@"x-goog-api-key"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     NSDictionary *body = @{ @"contents": @[ @{ @"parts": @[ @{ @"text": @"." } ] } ],
                             @"generationConfig": @{ @"maxOutputTokens": @1 } };
     request.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
 
+    // API key header or Google Bearer token, depending on how the person signed in.
+    [GoogleAuth authorizeRequest:request key:key completion:^(NSError *authError) {
+    if (authError != nil) {
+        [self finishWithTier:KeyTierUnknown completion:completion];   // cannot tell right now: try again next time
+        return;
+    }
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (error != nil) {
             [self finishWithTier:KeyTierUnknown completion:completion];   // no network: try again next time
@@ -159,6 +165,7 @@ static BOOL gDetecting = NO;
             [self finishWithTier:KeyTierUnknown completion:completion];   // bad key, server trouble...
         }
     }] resume];
+    }];
 }
 
 @end
