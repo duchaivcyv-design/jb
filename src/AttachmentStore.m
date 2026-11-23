@@ -21,7 +21,7 @@ static const NSUInteger kMaxVideoFrames = 4;
 // Ép trần cực cao theo yêu cầu (1 tỷ ký tự / 1GB) kết hợp streaming tránh OOM
 const NSUInteger kMaxTextFileBytes  = 1024ULL * 1024ULL * 1024ULL;
 const NSUInteger kMaxTextChars      = 1000000000ULL;               // 1 tỷ ký tự
-static const unsigned long long kMaxZipFileBytes = 100ULL * 1024ULL * 1024ULL;
+static const unsigned long long kMaxZipFileBytes = 500ULL * 1024ULL * 1024ULL;
 static const NSUInteger kStreamWriteChunkBytes = 1024 * 1024;      // Ghi từng khối 1MB
 
 // Ép mạnh chuỗi: gộp dòng trống liên tiếp (tối đa 1 dòng trống) và gộp nhiều space/tab liên tiếp thành 1 space
@@ -193,23 +193,6 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
         [image drawInRect:CGRectMake(0, 0, target.width, target.height)];
     }];
     return UIImageJPEGRepresentation(flat, quality);
-}
-
-+ (NSDictionary *)importFileData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey {
-    if (data.length == 0) { if (errorKey) *errorKey = @"att_err_empty"; return nil; }
-    if (data.length > 20 * 1024 * 1024) { if (errorKey) *errorKey = @"att_err_too_large"; return nil; }
-    NSString *dir = [self directoryForConversation:conversationId create:YES];
-    if (!dir) { if (errorKey) *errorKey = @"att_err_unreadable"; return nil; }
-    NSString *display = name.length > 0 ? name : @"tep.txt";
-    NSString *ext = [display pathExtension].lowercaseString;
-    NSString *attachmentId = [[NSUUID UUID] UUIDString];
-    NSString *file = ext.length > 0 ? [attachmentId stringByAppendingPathExtension:ext] : attachmentId;
-    if (![data writeToFile:[dir stringByAppendingPathComponent:file] options:NSDataWritingAtomic error:nil]) {
-        if (errorKey) *errorKey = @"att_err_unreadable";
-        return nil;
-    }
-    return @{ @"id": attachmentId, @"kind": @"file", @"name": display, @"mime": @"application/octet-stream",
-              @"file": file, @"bytes": @(data.length) };
 }
 
 + (NSDictionary *)importImageData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey {

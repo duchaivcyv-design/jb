@@ -1,51 +1,54 @@
-#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-// Sign in with a Google account (OAuth 2.0, PKCE) as an alternative to a Gemini API key.
+// "Sign in with Google" for Gemini, as an alternative to a pasted API key.
 //
-// The build needs an iOS OAuth client ID from Google Cloud. It is set at build time through the
-// GOOGLE_OAUTH_CLIENT_ID environment variable (see build.sh); without it, the sign-in button stays hidden.
-// Tokens are stored in the Keychain (the refresh token) and never written to logs.
+// How it works: OAuth 2.0 authorization-code flow with PKCE, run in the system web-auth sheet
+// (ASWebAuthenticationSession). The person supplies their OWN OAuth client ID (type "iOS") from a Google Cloud
+// project that has the Generative Language API enabled; no client secret is needed or stored. The refresh token is
+// kept like the API keys (Keychain, with a 0600 file fallback). Requests then carry "Authorization: Bearer <token>"
+// (and, if a Project ID was given, "x-goog-user-project") instead of the x-goog-api-key header.
+//
+// KeyStore hands the Gemini code a marker string (kGoogleOAuthKeyMarker) in place of a key while Google sign-in is the
+// active method, so every existing "has a key / load the key" call keeps working. Anything that builds a Gemini request
+// calls +authorizeRequest:key:completion: instead of setting the key header itself.
 
+extern NSString *const kGoogleOAuthKeyMarker;
 extern NSString *const GoogleAuthErrorDomain;
 
 typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
-    GoogleAuthErrorNotConfigured = 1,
-    GoogleAuthErrorCancelled,
-    GoogleAuthErrorStateMismatch,
-    GoogleAuthErrorDenied,        // the person refused access, or Google returned an error
-    GoogleAuthErrorNoToken,       // Google did not return the tokens we need
-    GoogleAuthErrorNetwork,
-    GoogleAuthErrorRevoked        // the stored sign-in was revoked; the person must sign in again
+    GoogleAuthErrorSignInRequired = 1,   // no session, or Google rejected the refresh token (expired / revoked)
+    GoogleAuthErrorNetwork = 2           // could not reach Google; the session itself may still be fine
 };
 
 @interface GoogleAuth : NSObject
 
-+ (BOOL)isConfigured;                 // this build has a client ID
-+ (NSString *)cloudProjectID;         // Cloud project for quota (x-goog-user-project); may be empty
-+ (NSString *)clientID;               // effective OAuth client ID: entered in the app, else from the build; may be empty
-+ (BOOL)isValidClientID:(NSString *)candidate;
-// Saves the values entered in the app (empty value = remove it). They take priority over the build settings.
-+ (void)saveClientID:(NSString *)clientID projectID:(NSString *)projectID;
-+ (BOOL)isSignedIn;                   // a refresh token is stored on this device
-+ (NSString *)accountEmail;           // email of the signed-in account, if Google told us
+// State (cheap: reads NSUserDefaults only).
++ (BOOL)isSignedIn;
++ (NSString *)accountEmail;          // may be empty
++ (NSString *)savedClientID;
++ (NSString *)savedProjectID;
++ (BOOL)prefersGoogle;               // when a pasted API key AND a Google session both exist, which one is used
++ (void)setPrefersGoogle:(BOOL)prefers;
++ (BOOL)isValidClientID:(NSString *)clientID;
 
-// Opens the Google sign-in page. Calls back on the main queue. Does not switch Gemini to Google by itself
-// when it fails. On success the Gemini credential is switched to the Google account.
-+ (void)signInFromViewController:(UIViewController *)presenter completion:(void (^)(NSError *error))completion;
+// Opens the Google sign-in page. `message` is nil when the person just closed the page (no error to show).
++ (void)signInWithClientID:(NSString *)clientID
+                 projectID:(NSString *)projectID
+                 presenter:(UIViewController *)presenter
+                completion:(void (^)(BOOL ok, NSString *message))completion;
 
-// Removes the stored tokens and switches Gemini back to the API key (if one is saved).
+// Forgets the session on this device (and asks Google to revoke the refresh token, best effort).
 + (void)signOut;
 
-// Last known access token, without waiting for the network. Starts a background refresh when the token is
-// missing or about to expire. May return nil right after a fresh install.
-+ (NSString *)accessTokenNonBlocking;
+// A valid access token, refreshed when needed. Completion runs on the main queue; error is non-nil when token is nil.
++ (void)accessTokenWithCompletion:(void (^)(NSString *token, NSError *error))completion;
 
-// A valid access token, refreshing it first if needed. It BLOCKS the calling thread for up to ~20 seconds,
-// so call it only from a background queue. On the main thread it behaves like accessTokenNonBlocking.
-+ (NSString *)accessTokenBlocking;
+// Puts the right credential on a Gemini request: the API key header for a normal key, or the Bearer token (+ project
+// header) when `key` is kGoogleOAuthKeyMarker. For a normal key the completion runs immediately on the calling
+// thread; for Google sign-in it runs on the main queue. `error` is nil on success.
++ (void)authorizeRequest:(NSMutableURLRequest *)request key:(NSString *)key completion:(void (^)(NSError *error))completion;
 
-// Call on launch and whenever the app comes back to the foreground, so the token is fresh before it is needed.
-+ (void)refreshIfNeeded;
+// Text for an auth error, in the app language.
++ (NSString *)messageForError:(NSError *)error;
 
 @end

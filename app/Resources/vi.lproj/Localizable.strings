@@ -69,7 +69,7 @@
 "att_err_no_text" = "Không tìm thấy chữ trong tệp này. Nếu đó là bản scan, hãy gửi dưới dạng PDF hoặc ảnh.";
 "att_err_encrypted" = "Tệp này bị khóa bằng mật khẩu hoặc dùng định dạng nén chưa hỗ trợ.";
 "err_too_large" = "Tin nhắn kèm tệp quá lớn để gửi. Hãy bớt tệp hoặc dùng tệp nhỏ hơn.";
-"subtitle_gemini" = "Nhập API key Gemini của bạn để bắt đầu. Key chỉ được lưu trên máy này.";
+"subtitle_gemini" = "Nhập API key Gemini hoặc đăng nhập bằng tài khoản Google. Thông tin chỉ được lưu trên máy này.";
 "subtitle_claude" = "Nhập API key Claude (Anthropic) của bạn. Key Claude cần nạp tiền (credit) trước khi dùng, không có gói miễn phí. Key chỉ được lưu trên máy này.";
 "placeholder_gemini" = "Dán API key (AIza...)";
 "placeholder_claude" = "Dán API key (sk-ant-...)";
@@ -269,28 +269,23 @@
 "update_err_corrupt" = "File tải về không hợp lệ. Hãy thử lại.";
 "update_err_save" = "Không lưu được file";
 
-// Google sign-in and timeout message (0.8.0)
 "google_sign_in" = "Đăng nhập bằng Google";
-"google_or" = "hoặc";
-"google_signed_in_as" = "Đang dùng Google: %@";
-"google_signed_in_plain" = "Đang dùng tài khoản Google";
-"google_not_configured" = "Bản build này chưa cấu hình đăng nhập Google. Hãy dùng API key.";
-"google_failed" = "Đăng nhập Google không thành công: %@";
-"google_rejected" = "Đăng nhập Google được, nhưng Gemini chưa chấp nhận quyền truy cập (HTTP %ld). Đã đăng xuất Google. Hãy dùng API key hoặc thử lại sau.";
-"google_quota_note" = "Yêu cầu đi qua project Google Cloud gắn với bản build này, nên hạn mức tính theo project đó.";
+"google_sign_in_again" = "Đăng nhập lại bằng Google";
 "google_sign_out" = "Đăng xuất Google";
-"google_sign_out_msg" = "Bạn sẽ phải đăng nhập lại bằng Google để dùng Gemini.";
-"err_timeout" = "Model không trả lời kịp thời gian chờ (thường do model suy nghĩ quá lâu). Thử hạ mức suy luận trong Cài đặt rồi gửi lại.";
-
-// In-app Google setup (0.8.0)
-"google_edit_hint" = "Giữ nút để sửa Client ID và Project ID.";
-"google_config_title" = "Cấu hình Google";
-"google_config_msg" = "Dán OAuth Client ID (dạng …apps.googleusercontent.com) và Project ID từ Google Cloud Console của bạn.";
-"google_config_client_placeholder" = "Client ID";
-"google_config_project_placeholder" = "Project ID (không bắt buộc)";
-"google_config_save" = "Lưu và đăng nhập";
-"google_bad_client_id" = "Client ID phải có dạng 123-abc.apps.googleusercontent.com";
-
-// Thinking time (0.8.0)
-"thinking_seconds" = "Đang suy nghĩ… %ld giây";
-"thinking_minutes" = "Đang suy nghĩ… %ld phút %ld giây";
+"google_sign_out_confirm" = "Đăng xuất tài khoản Google khỏi ứng dụng này?";
+"google_signed_in_as" = "Đã đăng nhập Google: %@";
+"google_setup_title" = "Đăng nhập Google";
+"google_setup_msg" = "Dán OAuth Client ID (loại iOS) của dự án Google Cloud đã bật Generative Language API. Project ID có thể để trống.";
+"google_client_id_placeholder" = "Client ID (…apps.googleusercontent.com)";
+"google_project_placeholder" = "Project ID (tuỳ chọn)";
+"google_continue" = "Tiếp tục";
+"google_err_client_id" = "Client ID không hợp lệ. Nó phải có dạng 123-abc.apps.googleusercontent.com.";
+"google_err_start" = "Không mở được trang đăng nhập Google.";
+"google_err_state" = "Phản hồi đăng nhập không khớp. Hãy thử lại.";
+"google_err_exchange" = "Google không cấp được quyền truy cập (%@).";
+"google_err_no_refresh" = "Google không trả về refresh token. Hãy đăng nhập lại và đồng ý mọi quyền.";
+"google_err_expired" = "Phiên đăng nhập Google đã hết hạn hoặc bị thu hồi. Hãy đăng nhập lại.";
+"google_err_network" = "Không kết nối được tới Google. Kiểm tra mạng rồi thử lại.";
+"google_status_denied" = "Google từ chối truy cập Gemini (HTTP %ld). Kiểm tra đã bật Generative Language API, email là test user và Project ID đúng.";
+"err_google_auth" = "Đăng nhập Google không còn hiệu lực. Vào Cài đặt › API key Gemini và đăng nhập lại.";
+"err_google_permission" = "Tài khoản/dự án Google không có quyền dùng Gemini. Kiểm tra đã bật Generative Language API và Project ID.";

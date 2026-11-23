@@ -1,17 +1,25 @@
-ClaudeMini long-code continuation patch
+ClaudeMini 0.7.3 + Google sign-in + anti-freeze patch
 
-Replace these files under src/:
-- ChatViewController.m
-- ClaudeStream.m
-- GeminiStream.m
-- AppSettings.m
-- SettingsViewController.m
+NEW files (src/):  GoogleAuth.h/.m, StreamWatchdog.h/.m
+CHANGED: src/KeyStore, KeyTier, GeminiClient, GeminiStream, ClaudeStream, ChatViewController, RootViewController,
+         SettingsViewController, app/Resources/web/render.js + chat.js, en/vi Localizable.strings, build.sh
+         (adds -framework AuthenticationServices)
 
-Behavior:
-- Uses the selected provider model's published output cap when the app output limit is set to 0 (model maximum).
-- Detects Anthropic stop_reason=max_tokens and Gemini finishReason=MAX_TOKENS.
-- Automatically continues up to 10 additional segments, appending each segment to one visible assistant reply and one saved message.
-- Stops safely when the accumulated continuation would consume too much of the model input context; preserves the generated text and displays a continuation notice.
-- Keeps the + tools menu and search chip in ChatViewController.m.
+1) Sign in with Google (Gemini only; Claude stays API-key)
+- OAuth 2.0 + PKCE in the system sign-in sheet. You bring your OWN OAuth client ID (type "iOS") from a Google Cloud
+  project with the Generative Language API enabled. No client secret is stored. Optional Project ID -> x-goog-user-project.
+- API key and Google sign-in both work; the one set up most recently is used. Key screen: "Dang nhap bang Google".
+- Scopes: openid, email, cloud-platform, generative-language.retriever (as in ai.google.dev OAuth quickstart).
+- While the Cloud app is in "Testing", Google expires the refresh token after 7 days: sign in again.
 
-Provider/model output and context limits still apply. This patch cannot make a provider emit unlimited tokens in one request.
+2) Freeze fixes
+- ChatViewController.flushPendingJSDelta was missing its closing braces (file did not compile): fixed.
+- Web page killed by iOS during a long reply: the page reloaded but the running reply was no longer shown. Now restored.
+- render.js cached every intermediate highlighted version of a growing code block (memory ~ n^2 -> iOS kills the page):
+  growing blocks are plain while streaming, highlighted at the end; cache is bounded by size; redraw rate slows with length.
+- Streams that go silent (dead connection, app was in background) are now aborted after 45 s once text flows
+  (12 s after returning from background) and the reply continues automatically.
+- A request that timed out was retried up to 12-14 times x 180 s: timeouts are no longer retried inside the stream
+  (the chat falls back to one single request); quick errors retry 2-3 times and honour Retry-After; daily quota is not retried.
+- A connection cut in the middle of a reply was reported as success (reply silently truncated): now reported so the
+  existing auto-continue resumes it.

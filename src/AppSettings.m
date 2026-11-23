@@ -229,9 +229,9 @@ static NSArray<NSDictionary *> *PromptChunkRecords(NSString *prompt) {
 
 + (NSInteger)attachmentMemory {
     NSNumber *value = [[NSUserDefaults standardUserDefaults] objectForKey:kAttachmentMemoryKey];
-    if (![value isKindOfClass:[NSNumber class]]) return 1;   // default: only the latest message's media is resent
+    if (![value isKindOfClass:[NSNumber class]]) return 3;
     NSInteger count = value.integerValue;
-    return (count == 0 || count == 1 || count == 3) ? count : 1;
+    return (count == 0 || count == 1 || count == 3) ? count : 3;
 }
 + (void)setAttachmentMemory:(NSInteger)count {
     if (count != 0 && count != 1 && count != 3) count = 3;
@@ -245,34 +245,20 @@ static NSArray<NSDictionary *> *PromptChunkRecords(NSString *prompt) {
     if (count != 0 && count != 2048 && count != 4096 && count != 8192 && count != 16384 && count != 32768 && count != 65536 && count != 128000) count = 0;
     [[NSUserDefaults standardUserDefaults] setInteger:count forKey:kMaxOutputTokensKey];
 }
-// Short default: every request sends this much history, so a long chat must not resend millions of characters.
-static const NSUInteger kDefaultContextLimitChars = 200000;
-static NSString *const kContextLimitMigratedKey = @"contextLimitMigratedV2";
-
 + (NSUInteger)contextLimitChars {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    if (![defaults boolForKey:kContextLimitMigratedKey]) {
-        // Earlier builds stored 10 million here for every option (the short options were rejected). Reset once.
-        [defaults setInteger:(NSInteger)kDefaultContextLimitChars forKey:kContextLimitCharsKey];
-        [defaults setBool:YES forKey:kContextLimitMigratedKey];
-    }
-    NSInteger value = [defaults integerForKey:kContextLimitCharsKey];
+    NSInteger value = [[NSUserDefaults standardUserDefaults] integerForKey:kContextLimitCharsKey];
     switch (value) {
-        case 100000: case 200000: case 400000: case 600000:
         case 1000000: case 5000000: case 10000000: case 25000000: case 50000000: case 100000000:
             return (NSUInteger)value;
-        default: return kDefaultContextLimitChars;
+        default: return 10000000;
     }
 }
 + (void)setContextLimitChars:(NSUInteger)count {
     switch (count) {
-        case 100000: case 200000: case 400000: case 600000:
         case 1000000: case 5000000: case 10000000: case 25000000: case 50000000: case 100000000: break;
-        default: count = kDefaultContextLimitChars; break;
+        default: count = 10000000; break;
     }
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setInteger:(NSInteger)count forKey:kContextLimitCharsKey];
-    [defaults setBool:YES forKey:kContextLimitMigratedKey];   // a deliberate choice must not be reset by the migration
+    [[NSUserDefaults standardUserDefaults] setInteger:(NSInteger)count forKey:kContextLimitCharsKey];
 }
 
 + (AIReasoningLevel)reasoningLevel {
@@ -285,11 +271,7 @@ static NSString *const kContextLimitMigratedKey = @"contextLimitMigratedV2";
 }
 + (BOOL)fastModeEnabled { return [[NSUserDefaults standardUserDefaults] boolForKey:kFastModeKey]; }
 + (void)setFastModeEnabled:(BOOL)enabled { [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFastModeKey]; }
-+ (BOOL)webSearchEnabled {
-    // On by default: answers about recent or verifiable facts come from the web. Turn it off in the tools menu.
-    if ([[NSUserDefaults standardUserDefaults] objectForKey:kWebSearchKey] == nil) return YES;
-    return [[NSUserDefaults standardUserDefaults] boolForKey:kWebSearchKey];
-}
++ (BOOL)webSearchEnabled { return [[NSUserDefaults standardUserDefaults] boolForKey:kWebSearchKey]; }
 + (void)setWebSearchEnabled:(BOOL)enabled { [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWebSearchKey]; }
 
 + (CGFloat)uiScale {

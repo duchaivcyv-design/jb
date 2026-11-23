@@ -1,5 +1,5 @@
 #import "GeminiClient.h"
-#import "KeyStore.h"
+#import "GoogleAuth.h"
 
 static NSString *const kGeminiModelsURL = @"https://generativelanguage.googleapis.com/v1beta/models";
 static const NSInteger kMaxModelPages = 10;
@@ -32,8 +32,24 @@ static NSMutableURLRequest *ModelsRequest(NSString *key, NSString *pageToken) {
                                 cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                             timeoutInterval:15.0];
     request.HTTPMethod = @"GET";
-    [KeyStore applyGeminiCredential:key toRequest:request];
     return request;
+}
+
+// Attaches the credential (API key header, or the Google Bearer token) and sends. When the Google session cannot be
+// refreshed the handler gets the auth error, which ResultForError() maps to "invalid key" or "network".
+static void SendModelsRequest(NSMutableURLRequest *request, NSString *key,
+                              void (^handler)(NSData *, NSURLResponse *, NSError *)) {
+    [GoogleAuth authorizeRequest:request key:key completion:^(NSError *authError) {
+        if (authError != nil) { handler(nil, nil, authError); return; }
+        [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:handler] resume];
+    }];
+}
+
+static GeminiCheckResult ResultForError(NSError *error) {
+    if ([error.domain isEqualToString:GoogleAuthErrorDomain] && error.code == GoogleAuthErrorSignInRequired) {
+        return GeminiCheckInvalidKey;
+    }
+    return GeminiCheckNetworkError;
 }
 
 @implementation GeminiClient
@@ -52,15 +68,13 @@ static NSMutableURLRequest *ModelsRequest(NSString *key, NSString *pageToken) {
 }
 
 + (void)verifyKey:(NSString *)cleanKey attempt:(NSInteger)attempt completion:(GeminiVerifyCompletion)completion {
-    NSURLSessionDataTask *task =
-        [[NSURLSession sharedSession] dataTaskWithRequest:ModelsRequest(cleanKey, nil)
-                                        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    SendModelsRequest(ModelsRequest(cleanKey, nil), cleanKey, ^(NSData *data, NSURLResponse *response, NSError *error) {
         GeminiCheckResult result = GeminiCheckUnknown;
         NSInteger count = 0;
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
 
         if (error != nil) {
-            result = GeminiCheckNetworkError;
+            result = ResultForError(error);
         } else {
             result = ResultForStatus(status);
             if (result == GeminiCheckOK) {
@@ -94,8 +108,7 @@ static NSMutableURLRequest *ModelsRequest(NSString *key, NSString *pageToken) {
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(result, count, status);
         });
-    }];
-    [task resume];
+    });
 }
 
 #pragma mark - Model list
@@ -134,11 +147,9 @@ static NSMutableURLRequest *ModelsRequest(NSString *key, NSString *pageToken) {
                      depth:(NSInteger)depth
                    attempt:(NSInteger)attempt
                 completion:(GeminiModelsCompletion)completion {
-    NSURLSessionDataTask *task =
-        [[NSURLSession sharedSession] dataTaskWithRequest:ModelsRequest(key, pageToken)
-                                        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    SendModelsRequest(ModelsRequest(key, pageToken), key, ^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
-        GeminiCheckResult result = (error != nil) ? GeminiCheckNetworkError : ResultForStatus(status);
+        GeminiCheckResult result = (error != nil) ? ResultForError(error) : ResultForStatus(status);
 
         if (result != GeminiCheckOK) {
             BOOL shouldRetry = (result == GeminiCheckNetworkError || result == GeminiCheckRateLimited) && attempt < 2;
@@ -198,8 +209,7 @@ static NSMutableURLRequest *ModelsRequest(NSString *key, NSString *pageToken) {
             return [b[@"id"] compare:a[@"id"] options:NSNumericSearch];
         }];
         dispatch_async(dispatch_get_main_queue(), ^{ completion(sorted, GeminiCheckOK); });
-    }];
-    [task resume];
+    });
 }
 
 @end

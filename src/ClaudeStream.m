@@ -2,6 +2,11 @@
 #import "Strings.h"
 #import "AppSettings.h"
 #import "ModelStore.h"
+#import "StreamWatchdog.h"
+#import "DiagnosticLog.h"
+
+// Once real text is streaming, silence this long means the connection died (Anthropic also sends periodic pings).
+static const NSTimeInterval kMidStreamIdleLimit = 45.0;
 
 static NSString *const kClaudeMessagesURL = @"https://api.anthropic.com/v1/messages";
 static NSString *const kAnthropicVersion = @"2023-06-01";
@@ -28,6 +33,8 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
 
 @property (assign, nonatomic) NSInteger sameKeyRetryCount;
 @property (strong, nonatomic) NSMutableURLRequest *savedRequest;
+@property (strong, nonatomic) StreamWatchdog *watchdog;
+@property (assign, nonatomic) BOOL stalled;
 @end
 
 @implementation ClaudeStream
@@ -174,7 +181,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
         }
     }
 
-    if (self.allowWebSearch && !self.disableTools) {
+    if ([AppSettings webSearchEnabled]) {
         payload[@"tools"] = @[@{ @"type": @"web_search_20250305", @"name": @"web_search", @"max_uses": @3 }];
     }
 
@@ -205,6 +212,9 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
 - (void)executeForcedRequest:(NSMutableURLRequest *)request {
     if (self.finished || self.cancelled || !request) return;
 
+    [self.watchdog stop];
+    self.watchdog = nil;
+    self.stalled = NO;
     if (self.session) {
         [self.session invalidateAndCancel];
         self.session = nil;
@@ -230,11 +240,29 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
     self.session = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:[NSOperationQueue mainQueue]];
     self.task = [self.session dataTaskWithRequest:request];
     [self.task resume];
+
+    // Before any text arrives a model may legitimately think for a long time, so the idle limit is the request timeout;
+    // it drops to kMidStreamIdleLimit when the first text arrives.
+    StreamWatchdog *dog = [[StreamWatchdog alloc] init];
+    dog.idleLimit = timeout;
+    __weak typeof(self) weakSelf = self;
+    dog.onStall = ^{ [weakSelf streamStalled]; };
+    self.watchdog = dog;
+    [dog start];
+}
+
+- (void)streamStalled {
+    if (self.finished || self.cancelled) return;
+    [DiagnosticLog log:@"claude stream silent for too long: aborting this attempt (gotText=%d)", self.gotText];
+    self.stalled = YES;
+    [self.task cancel];   // didCompleteWithError: then reports it as a timeout
 }
 
 - (void)cancel {
     if (self.finished) return;
     self.cancelled = YES;
+    [self.watchdog stop];
+    self.watchdog = nil;
     [self.task cancel];
     [self.session invalidateAndCancel];
     self.session = nil;
@@ -247,6 +275,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
           dataTask:(NSURLSessionDataTask *)dataTask
 didReceiveResponse:(NSURLResponse *)response
  completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    [self.watchdog touch];
     self.status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
     self.retryAfterSeconds = 0;
     if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
@@ -280,6 +309,7 @@ didReceiveResponse:(NSURLResponse *)response
 }
 
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    [self.watchdog touch];
     if (self.status != 200) {
         [self.errorBody appendData:data];
         return;
@@ -290,6 +320,14 @@ didReceiveResponse:(NSURLResponse *)response
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     if (self.finished) return;
+    if (self.task != nil && task != self.task) return;   // late callback from an attempt that was already replaced
+    [self.watchdog stop];
+    self.watchdog = nil;
+    if (self.stalled) {
+        self.stalled = NO;
+        error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorTimedOut
+                                userInfo:@{ NSLocalizedDescriptionKey: @"The stream stopped sending data." }];
+    }
 
     if (self.useStreaming) {
         [self drainBufferFinal:YES];
@@ -299,7 +337,8 @@ didReceiveResponse:(NSURLResponse *)response
                                   [self.inStreamErrorType isEqualToString:@"overloaded_error"] ||
                                   [self.inStreamErrorType isEqualToString:@"rate_limit_error"]);
 
-    if (!self.cancelled && error == nil && !isRateLimitOrOverload && self.status == 200 && (self.inStreamErrorType.length == 0)) {
+    BOOL replyComplete = (self.stopReason.length > 0 && self.gotText);   // stop_reason arrived: nothing is missing
+    if (!self.cancelled && (error == nil || replyComplete) && !isRateLimitOrOverload && self.status == 200 && (self.inStreamErrorType.length == 0)) {
         self.finished = YES;
         if (!self.useStreaming) [self processWholeBody];
         [self.session finishTasksAndInvalidate];
@@ -345,19 +384,26 @@ didReceiveResponse:(NSURLResponse *)response
         return;
     }
 
-    NSInteger maxRetries = self.useFastSpeed ? 8 : 12;
-    double maxBackoff = self.useFastSpeed ? 5.0 : 10.0;
-    // A timeout means no bytes arrived for the whole idle window (common while the model is still thinking).
-    // Retrying it silently only repeats the same long wait, so it fails at once with a clear message instead.
-    BOOL timedOut = (error != nil && error.code == NSURLErrorTimedOut);
-    BOOL networkDrop = (error != nil && self.status == 0 && error.code != NSURLErrorCancelled && !timedOut);
-    NSInteger retryLimit = isRateLimitOrOverload ? maxRetries : MIN(maxRetries, 3);
-    if (!self.gotText && (isRateLimitOrOverload || networkDrop)) {
-        if (self.sameKeyRetryCount < retryLimit) {
+    // Quick failures before any text (overload, a dropped connection) are retried a few times here. A request that simply
+    // timed out or went silent is NOT retried here (each wait is minutes long): the chat falls back to a single request.
+    NSInteger maxRetries = self.useFastSpeed ? 2 : 3;
+    double maxBackoff = 6.0;
+    BOOL quickTransportFailure = (error != nil && self.status == 0 &&
+                                  error.code != NSURLErrorCancelled && error.code != NSURLErrorTimedOut);
+    if (!self.gotText && (isRateLimitOrOverload || quickTransportFailure)) {
+        BOOL retryable = YES;
+        NSTimeInterval serverHint = 0;
+        if (isRateLimitOrOverload) {
+            serverHint = self.retryAfterSeconds;
+            BOOL rateLimited = (self.status == 429 || [self.inStreamErrorType isEqualToString:@"rate_limit_error"]);
+            if (rateLimited && serverHint > 20.0) retryable = NO;   // better shown to the person than waited out blindly
+            serverHint = MIN(serverHint, 20.0);
+        }
+        if (retryable && self.sameKeyRetryCount < maxRetries) {
             self.sameKeyRetryCount++;
             NSTimeInterval backoffDelay = MIN(pow(1.45, self.sameKeyRetryCount), maxBackoff);
             NSTimeInterval jitter = (double)(arc4random_uniform(350)) / 1000.0;
-            NSTimeInterval totalWait = backoffDelay + jitter;
+            NSTimeInterval totalWait = MAX(backoffDelay + jitter, serverHint);
 
             [self.session invalidateAndCancel];
             self.session = nil;
@@ -383,6 +429,11 @@ didReceiveResponse:(NSURLResponse *)response
     NSString *detail = nil;
 
     if (error != nil && !self.gotText) {
+        result = GeminiStreamErrorNetwork;
+        detail = [NSString stringWithFormat:@"%@ [%@ %ld]", error.localizedDescription, error.domain, (long)error.code];
+    } else if (error != nil && self.gotText && self.status == 200) {
+        // The connection broke after part of the reply arrived: report it so the chat keeps what was received and
+        // continues the reply automatically instead of silently cutting it off.
         result = GeminiStreamErrorNetwork;
         detail = [NSString stringWithFormat:@"%@ [%@ %ld]", error.localizedDescription, error.domain, (long)error.code];
     } else if (self.status != 200 && !self.gotText) {
@@ -501,6 +552,7 @@ didReceiveResponse:(NSURLResponse *)response
         NSDictionary *delta = [event[@"delta"] isKindOfClass:[NSDictionary class]] ? event[@"delta"] : nil;
         NSString *text = [delta[@"text"] isKindOfClass:[NSString class]] ? delta[@"text"] : nil;
         if ([delta[@"type"] isEqualToString:@"text_delta"] && text.length > 0) {
+            if (!self.gotText) self.watchdog.idleLimit = kMidStreamIdleLimit;
             self.gotText = YES;
             if (self.onDelta) self.onDelta(text);
         }

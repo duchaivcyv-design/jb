@@ -9,6 +9,14 @@
   var MAX_HIGHLIGHT_CHARS = 60000;
   var MAX_MATH_CHARS = 4000;
 
+  // While a reply streams in, the whole text is re-rendered many times. Code blocks that are still growing are shown
+  // un-highlighted and are not cached (every intermediate version would otherwise be kept: memory grows with the
+  // square of the reply and iOS kills the page). The final render (when the reply ends) highlights everything.
+  var STREAM_PLAIN_CHARS = 2500;
+  var CACHE_CHAR_LIMIT = 3000000;
+  var streamingMode = false;
+  var hlChars = 0;
+
   var hlCache = Object.create(null), hlCount = 0;
   var mathCache = Object.create(null), mathCount = 0;
 
@@ -29,10 +37,20 @@
     return keys.length - half;
   }
 
+  function measureCache(map) {
+    var total = 0, keys = Object.keys(map);
+    for (var i = 0; i < keys.length; i++) { total += keys[i].length + String(map[keys[i]]).length; }
+    return total;
+  }
+
   function putCache(isHl, key, val) {
     if (isHl) {
-      if (hlCount >= CACHE_LIMIT) { hlCount = evictHalf(hlCache); }
+      if (hlCount >= CACHE_LIMIT || hlChars > CACHE_CHAR_LIMIT) {
+        hlCount = evictHalf(hlCache);
+        hlChars = measureCache(hlCache);
+      }
       if (hlCache[key] === undefined) { hlCount++; }
+      hlChars += key.length + String(val).length;
       hlCache[key] = val;
     } else {
       if (mathCount >= CACHE_LIMIT) { mathCount = evictHalf(mathCache); }
@@ -48,6 +66,9 @@
   function highlight(code, lang) {
     var raw = String(code === undefined || code === null ? '' : code);
     if (raw.length > MAX_HIGHLIGHT_CHARS) {
+      return escapeHtml(raw);
+    }
+    if (streamingMode && raw.length > STREAM_PLAIN_CHARS) {
       return escapeHtml(raw);
     }
     var key = 'k' + (lang || '') + '\u0000' + raw;
@@ -303,6 +324,7 @@
         copyLabel = String(label);
       }
     },
+    setStreaming: function (on) { streamingMode = !!on; },
     ready: !!md
   };
 })();

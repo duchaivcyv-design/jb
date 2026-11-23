@@ -5,8 +5,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Anthropic Claude: POST /v1/messages, as a live stream (SSE) or a single request.
 @interface ClaudeStream : NSObject <ChatStreaming>
-@property (assign, nonatomic) BOOL allowWebSearch;   // per request: the person's setting AND the question needs fresh facts
-@property (assign, nonatomic) BOOL disableTools;     // retry without search/code tools after the provider refused them
 
 - (instancetype)initWithKey:(NSString *)key model:(NSString *)model turns:(NSArray *)turns system:(nullable NSString *)system;
 

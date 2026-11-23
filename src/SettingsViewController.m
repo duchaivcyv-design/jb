@@ -1,6 +1,7 @@
 #import "SettingsViewController.h"
 #import "Strings.h"
 #import "Theme.h"
+#import "GoogleAuth.h"
 #import "KeyStore.h"
 #import "AppSettings.h"
 #import "ConversationStore.h"
@@ -330,6 +331,10 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
 - (NSString *)maskedKeyFor:(AIProvider)provider {
     NSString *key = [KeyStore loadKeyForProvider:provider];
     if (key.length == 0) return L(@"api_key_none");
+    if ([key isEqualToString:kGoogleOAuthKeyMarker]) {
+        NSString *email = [GoogleAuth accountEmail];
+        return email.length ? [@"Google \u00B7 " stringByAppendingString:email] : @"Google";
+    }
     NSString *tail = key.length > 4 ? [key substringFromIndex:key.length - 4] : key;
     return [@"\u2022\u2022\u2022\u2022" stringByAppendingString:tail];
 }
@@ -613,8 +618,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:L(@"context_memory_title")
                                                                    message:L(@"context_memory_note")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray *options = @[ @[@100000, [NSString stringWithFormat:L(@"context_memory_value"), 100]],
-                          @[@200000, [NSString stringWithFormat:L(@"context_memory_value"), 200]],
+    NSArray *options = @[ @[@200000, [NSString stringWithFormat:L(@"context_memory_value"), 200]],
                           @[@400000, [NSString stringWithFormat:L(@"context_memory_value"), 400]],
                           @[@600000, [NSString stringWithFormat:L(@"context_memory_value"), 600]] ];
     __weak typeof(self) weakSelf = self;

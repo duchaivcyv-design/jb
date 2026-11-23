@@ -14,11 +14,6 @@ typedef NS_ENUM(NSInteger, StatusKind) {
     StatusError
 };
 
-static NSString *GoogleSignedInTitle(void) {
-    NSString *email = [GoogleAuth accountEmail];
-    return email.length > 0 ? [NSString stringWithFormat:L(@"google_signed_in_as"), email] : L(@"google_signed_in_plain");
-}
-
 @interface RootViewController ()
 @property (strong, nonatomic) UIScrollView *scrollView;
 @property (strong, nonatomic) UIImageView *logoView;
@@ -29,11 +24,10 @@ static NSString *GoogleSignedInTitle(void) {
 @property (strong, nonatomic) UITextField *keyField;
 @property (strong, nonatomic) UIButton *pasteButton;
 @property (strong, nonatomic) UIButton *primaryButton;
-@property (strong, nonatomic) UILabel *orLabel;
-@property (strong, nonatomic) UIButton *googleButton;
-@property (strong, nonatomic) UILabel *googleHintLabel;
 @property (strong, nonatomic) UILabel *statusLabel;
 @property (strong, nonatomic) UIButton *deleteButton;
+@property (strong, nonatomic) UIButton *googleButton;      // Gemini only: sign in with Google
+@property (strong, nonatomic) UIButton *googleOutButton;   // Gemini only, when signed in
 @property (strong, nonatomic) UIButton *helpButton;
 @property (assign, nonatomic) BOOL hasSavedKey;
 @property (assign, nonatomic) BOOL busy;
@@ -135,35 +129,23 @@ static NSString *GoogleSignedInTitle(void) {
     [self.primaryButton addTarget:self action:@selector(verifyTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.scrollView addSubview:self.primaryButton];
 
-    // Google sign-in (Gemini only; shown only when this build has a client ID)
-    self.orLabel = [[UILabel alloc] init];
-    self.orLabel.text = L(@"google_or");
-    self.orLabel.font = [UIFont systemFontOfSize:14];
-    self.orLabel.textColor = [Theme secondaryText];
-    self.orLabel.textAlignment = NSTextAlignmentCenter;
-    [self.scrollView addSubview:self.orLabel];
-
+    // Google sign-in (Gemini only)
     self.googleButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.googleButton.backgroundColor = [Theme surface];
     self.googleButton.layer.cornerRadius = 12;
     self.googleButton.layer.borderWidth = 1;
     self.googleButton.layer.borderColor = [Theme border].CGColor;
-    self.googleButton.clipsToBounds = YES;
     [self.googleButton setTitleColor:[Theme text] forState:UIControlStateNormal];
-    [self.googleButton setTitleColor:[Theme secondaryText] forState:UIControlStateDisabled];
     self.googleButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     [self.googleButton addTarget:self action:@selector(googleTapped) forControlEvents:UIControlEventTouchUpInside];
-    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(googleLongPressed:)];
-    [self.googleButton addGestureRecognizer:longPress];
     [self.scrollView addSubview:self.googleButton];
 
-    self.googleHintLabel = [[UILabel alloc] init];
-    self.googleHintLabel.text = L(@"google_quota_note");
-    self.googleHintLabel.font = [UIFont systemFontOfSize:13];
-    self.googleHintLabel.textColor = [Theme secondaryText];
-    self.googleHintLabel.textAlignment = NSTextAlignmentCenter;
-    self.googleHintLabel.numberOfLines = 0;
-    [self.scrollView addSubview:self.googleHintLabel];
+    self.googleOutButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.googleOutButton setTitle:L(@"google_sign_out") forState:UIControlStateNormal];
+    [self.googleOutButton setTitleColor:[Theme error] forState:UIControlStateNormal];
+    self.googleOutButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    [self.googleOutButton addTarget:self action:@selector(googleSignOutTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.scrollView addSubview:self.googleOutButton];
 
     // Status
     self.statusLabel = [[UILabel alloc] init];
@@ -257,18 +239,18 @@ static NSString *GoogleSignedInTitle(void) {
     self.primaryButton.frame = CGRectMake(x, y, contentWidth, 52);
     y += 52 + 14;
 
-    BOOL showGoogle = [self showsGoogleButton];
-    self.orLabel.hidden = !showGoogle;
+    BOOL showGoogle = (self.provider == AIProviderGemini);
     self.googleButton.hidden = !showGoogle;
-    self.googleHintLabel.hidden = !showGoogle;
+    BOOL googleIn = showGoogle && [GoogleAuth isSignedIn];
+    self.googleOutButton.hidden = !googleIn;
     if (showGoogle) {
-        self.orLabel.frame = CGRectMake(x, y, contentWidth, 20);
-        y += 20 + 10;
         self.googleButton.frame = CGRectMake(x, y, contentWidth, 52);
         y += 52 + 8;
-        CGSize hintSize = [self.googleHintLabel sizeThatFits:CGSizeMake(contentWidth, CGFLOAT_MAX)];
-        self.googleHintLabel.frame = CGRectMake(x, y, contentWidth, ceil(hintSize.height));
-        y += ceil(hintSize.height) + 14;
+        if (googleIn) {
+            self.googleOutButton.frame = CGRectMake(x, y, contentWidth, 36);
+            y += 36 + 6;
+        }
+        y += 6;
     }
 
     if (self.statusLabel.text.length > 0) {
@@ -299,149 +281,20 @@ static NSString *GoogleSignedInTitle(void) {
 #pragma mark - State
 
 - (void)refreshSavedState {
-    self.hasSavedKey = [KeyStore hasKeyForProvider:self.provider];
-    BOOL usingGoogle = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
-    if (self.hasSavedKey && self.statusLabel.text.length == 0) {
-        if (usingGoogle) {
-            [self setStatus:GoogleSignedInTitle() kind:StatusNeutral];
-        } else {
-            NSString *saved = [KeyStore loadKeyForProvider:self.provider] ?: @"";
+    NSString *saved = [KeyStore loadRawKeyForProvider:self.provider];
+    self.hasSavedKey = saved.length > 0;
+    if (self.statusLabel.text.length == 0) {
+        if (self.provider == AIProviderGemini && [GoogleAuth isSignedIn] && (!self.hasSavedKey || [GoogleAuth prefersGoogle])) {
+            NSString *who = [GoogleAuth accountEmail].length ? [GoogleAuth accountEmail] : @"Google";
+            [self setStatus:[NSString stringWithFormat:L(@"google_signed_in_as"), who] kind:StatusNeutral];
+        } else if (self.hasSavedKey) {
             NSString *tail = saved.length > 4 ? [saved substringFromIndex:saved.length - 4] : saved;
             [self setStatus:[NSString stringWithFormat:L(@"status_saved"), tail] kind:StatusNeutral];
         }
     }
-    [self updateGoogleButton];
+    [self updateGoogleButtonTitle];
     [self updateButtonTitle];
     [self.view setNeedsLayout];
-}
-
-// Always shown for Gemini, so the person can see the option. Without a client ID in this build, tapping it
-// explains why instead of hiding the option.
-- (BOOL)showsGoogleButton {
-    return self.provider == AIProviderGemini;
-}
-
-- (void)updateGoogleButton {
-    BOOL signedIn = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
-    [self.googleButton setTitle:(signedIn ? GoogleSignedInTitle() : L(@"google_sign_in")) forState:UIControlStateNormal];
-    [self.deleteButton setTitle:L(signedIn ? @"google_sign_out" : @"delete_key") forState:UIControlStateNormal];
-    NSString *base = [GoogleAuth isConfigured] ? L(@"google_quota_note") : L(@"google_not_configured");
-    self.googleHintLabel.text = [base stringByAppendingFormat:@"\n%@", L(@"google_edit_hint")];
-    [self.view setNeedsLayout];
-}
-
-- (void)googleTapped {
-    if (self.busy) return;
-    [self.view endEditing:YES];
-    if (![GoogleAuth isConfigured]) {
-        [self presentGoogleConfigEditorThenSignIn:YES];
-        return;
-    }
-    self.busy = YES;
-    self.googleButton.enabled = NO;
-    [self setStatus:@"" kind:StatusNeutral];
-    [self updateButtonTitle];
-
-    __weak typeof(self) weakSelf = self;
-    [GoogleAuth signInFromViewController:self completion:^(NSError *error) {
-        RootViewController *strongSelf = weakSelf;
-        if (!strongSelf) return;
-        if (error != nil) {
-            strongSelf.busy = NO;
-            strongSelf.googleButton.enabled = YES;
-            BOOL cancelled = [error.domain isEqualToString:GoogleAuthErrorDomain] && error.code == GoogleAuthErrorCancelled;
-            if (!cancelled) {
-                NSString *message = error.code == GoogleAuthErrorNotConfigured
-                    ? L(@"google_not_configured")
-                    : [NSString stringWithFormat:L(@"google_failed"), error.localizedDescription ?: @""];
-                [strongSelf setStatus:message kind:StatusError];
-            }
-            [DiagnosticLog log:@"google sign-in ended: domain=%@ code=%ld", error.domain, (long)error.code];
-            [strongSelf updateButtonTitle];
-            [strongSelf.view setNeedsLayout];
-            return;
-        }
-        [strongSelf verifyGoogleSession];
-    }];
-}
-
-- (void)googleLongPressed:(UILongPressGestureRecognizer *)gesture {
-    if (gesture.state == UIGestureRecognizerStateBegan) [self presentGoogleConfigEditorThenSignIn:NO];
-}
-
-// Lets the person enter their own OAuth client ID and Cloud project ID, so no rebuild is needed.
-- (void)presentGoogleConfigEditorThenSignIn:(BOOL)signInAfterSave {
-    if (self.busy) return;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:L(@"google_config_title")
-                                                                   message:L(@"google_config_msg")
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = L(@"google_config_client_placeholder");
-        field.text = [GoogleAuth clientID];
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = L(@"google_config_project_placeholder");
-        field.text = [GoogleAuth cloudProjectID];
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-        field.clearButtonMode = UITextFieldViewModeWhileEditing;
-    }];
-
-    __weak typeof(self) weakSelf = self;
-    __weak UIAlertController *weakAlert = alert;
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"google_config_save") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        RootViewController *strongSelf = weakSelf;
-        UIAlertController *strongAlert = weakAlert;
-        if (!strongSelf || !strongAlert) return;
-        NSString *clientID = strongAlert.textFields[0].text ?: @"";
-        NSString *projectID = strongAlert.textFields[1].text ?: @"";
-        if (![GoogleAuth isValidClientID:clientID]) {
-            [strongSelf setStatus:L(@"google_bad_client_id") kind:StatusError];
-            [strongSelf.view setNeedsLayout];
-            return;
-        }
-        [GoogleAuth saveClientID:clientID projectID:projectID];
-        [strongSelf setStatus:@"" kind:StatusNeutral];
-        [strongSelf updateGoogleButton];
-        if (signInAfterSave) [strongSelf googleTapped];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-// Gemini has to accept the Google token before the sign-in is kept; otherwise it is removed again.
-- (void)verifyGoogleSession {
-    NSString *token = [GoogleAuth accessTokenNonBlocking] ?: @"";
-    __weak typeof(self) weakSelf = self;
-    [GeminiClient verifyKey:token completion:^(GeminiCheckResult result, NSInteger count, NSInteger httpStatus) {
-        RootViewController *strongSelf = weakSelf;
-        if (!strongSelf) return;
-        strongSelf.busy = NO;
-        strongSelf.googleButton.enabled = YES;
-        [DiagnosticLog log:@"google session check: result=%ld http=%ld models=%ld", (long)result, (long)httpStatus, (long)count];
-
-        if (result == GeminiCheckOK) {
-            strongSelf.hasSavedKey = YES;
-            [strongSelf setStatus:[NSString stringWithFormat:L(@"status_ok"), (long)count] kind:StatusSuccess];
-            [strongSelf updateGoogleButton];
-            [strongSelf updateButtonTitle];
-            [strongSelf.view setNeedsLayout];
-            if (!strongSelf.embedded) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
-                });
-            }
-            return;
-        }
-        [GoogleAuth signOut];
-        [strongSelf setStatus:[NSString stringWithFormat:L(@"google_rejected"), (long)httpStatus] kind:StatusError];
-        [strongSelf updateGoogleButton];
-        [strongSelf updateButtonTitle];
-        [strongSelf.view setNeedsLayout];
-    }];
 }
 
 - (void)updateButtonTitle {
@@ -452,7 +305,8 @@ static NSString *GoogleSignedInTitle(void) {
         return;
     }
     self.primaryButton.enabled = YES;
-    BOOL recheck = self.hasSavedKey && self.keyField.text.length == 0;
+    BOOL googleOnly = (self.provider == AIProviderGemini && [GoogleAuth isSignedIn]);
+    BOOL recheck = (self.hasSavedKey || googleOnly) && self.keyField.text.length == 0;
     NSString *title = recheck ? L(@"verify_again") : L(@"verify_save");
     [self.primaryButton setTitle:title forState:UIControlStateNormal];
 }
@@ -494,6 +348,7 @@ static NSString *GoogleSignedInTitle(void) {
     self.keyField.placeholder = [self placeholderText];
     [self.helpButton setTitle:[self helpTitle] forState:UIControlStateNormal];
     [self refreshSavedState];
+    [self.view setNeedsLayout];
 }
 
 - (void)dismissKeyboard {
@@ -524,7 +379,8 @@ static NSString *GoogleSignedInTitle(void) {
 
     NSString *typed = [self.keyField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     BOOL fromField = typed.length > 0;
-    NSString *key = fromField ? typed : [KeyStore loadKeyForProvider:self.provider];
+    NSString *key = fromField ? typed : [KeyStore loadRawKeyForProvider:self.provider];
+    if (key.length == 0 && self.provider == AIProviderGemini && [GoogleAuth isSignedIn]) key = kGoogleOAuthKeyMarker;   // re-check the Google session
     if (key.length == 0) {
         [self setStatus:L(@"status_empty") kind:StatusError];
         return;
@@ -561,7 +417,13 @@ static NSString *GoogleSignedInTitle(void) {
                 break;
             }
             case GeminiCheckInvalidKey:
-                [strongSelf setStatus:L(@"status_invalid") kind:StatusError];
+                if ([key isEqualToString:kGoogleOAuthKeyMarker]) {
+                    NSString *msg = (httpStatus == 0) ? L(@"google_err_expired")
+                                                      : [NSString stringWithFormat:L(@"google_status_denied"), (long)httpStatus];
+                    [strongSelf setStatus:msg kind:StatusError];
+                } else {
+                    [strongSelf setStatus:L(@"status_invalid") kind:StatusError];
+                }
                 break;
             case GeminiCheckRateLimited:
                 [strongSelf setStatus:L(@"status_rate") kind:StatusError];
@@ -584,21 +446,115 @@ static NSString *GoogleSignedInTitle(void) {
     }
 }
 
+#pragma mark - Google sign-in
+
+- (void)updateGoogleButtonTitle {
+    NSString *title = [GoogleAuth isSignedIn] ? L(@"google_sign_in_again") : L(@"google_sign_in");
+    [self.googleButton setTitle:title forState:UIControlStateNormal];
+}
+
+- (void)googleTapped {
+    if (self.busy) return;
+    [self.view endEditing:YES];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:L(@"google_setup_title")
+                                                                   message:L(@"google_setup_msg")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = L(@"google_client_id_placeholder");
+        field.text = [GoogleAuth savedClientID];
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.keyboardType = UIKeyboardTypeURL;
+    }];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = L(@"google_project_placeholder");
+        field.text = [GoogleAuth savedProjectID];
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"google_continue") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        RootViewController *me = weakSelf;
+        if (!me) return;
+        [me startGoogleSignInWithClientID:alert.textFields[0].text projectID:alert.textFields[1].text];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)startGoogleSignInWithClientID:(NSString *)clientID projectID:(NSString *)projectID {
+    self.busy = YES;
+    [self setStatus:@"" kind:StatusNeutral];
+    [self updateButtonTitle];
+    __weak typeof(self) weakSelf = self;
+    [GoogleAuth signInWithClientID:clientID projectID:projectID presenter:self completion:^(BOOL ok, NSString *message) {
+        RootViewController *me = weakSelf;
+        if (!me) return;
+        if (!ok) {
+            me.busy = NO;
+            if (message.length > 0) [me setStatus:message kind:StatusError];
+            [me updateButtonTitle];
+            [me.view setNeedsLayout];
+            return;
+        }
+        // Signed in: check that Gemini really answers for this account/project and count the models.
+        [GeminiClient verifyKey:kGoogleOAuthKeyMarker completion:^(GeminiCheckResult result, NSInteger count, NSInteger httpStatus) {
+            RootViewController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.busy = NO;
+            [DiagnosticLog log:@"google gemini check: result=%ld http=%ld models=%ld", (long)result, (long)httpStatus, (long)count];
+            if (result == GeminiCheckOK) {
+                [strongSelf setStatus:[NSString stringWithFormat:L(@"status_ok"), (long)count] kind:StatusSuccess];
+                if (!strongSelf.embedded) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
+                    });
+                }
+            } else if (result == GeminiCheckRateLimited) {
+                [strongSelf setStatus:L(@"status_rate") kind:StatusError];
+            } else if (result == GeminiCheckNetworkError) {
+                [strongSelf setStatus:L(@"status_network") kind:StatusError];
+            } else {
+                [strongSelf setStatus:[NSString stringWithFormat:L(@"google_status_denied"), (long)httpStatus] kind:StatusError];
+            }
+            [strongSelf updateGoogleButtonTitle];
+            [strongSelf updateButtonTitle];
+            [strongSelf.view setNeedsLayout];
+        }];
+    }];
+}
+
+- (void)googleSignOutTapped {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:L(@"google_sign_out")
+                                                                   message:L(@"google_sign_out_confirm")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:L(@"google_sign_out") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        RootViewController *me = weakSelf;
+        if (!me) return;
+        [GoogleAuth signOut];
+        [me setStatus:L(@"status_deleted") kind:StatusNeutral];
+        [me updateGoogleButtonTitle];
+        [me updateButtonTitle];
+        [me.view setNeedsLayout];
+        [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)deleteTapped {
-    BOOL signingOut = self.provider == AIProviderGemini && [KeyStore geminiUsesGoogleSignIn];
     UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:L(signingOut ? @"google_sign_out" : @"delete_confirm_title")
-                                            message:L(signingOut ? @"google_sign_out_msg" : @"delete_confirm_msg")
+        [UIAlertController alertControllerWithTitle:L(@"delete_confirm_title")
+                                            message:L(@"delete_confirm_msg")
                                      preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:L(@"delete") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         RootViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
-        if (signingOut) [GoogleAuth signOut];
-        else [KeyStore deleteKeyForProvider:strongSelf.provider];
-        strongSelf.hasSavedKey = [KeyStore hasKeyForProvider:strongSelf.provider];
-        [strongSelf updateGoogleButton];
+        [KeyStore deleteKeyForProvider:strongSelf.provider];
+        strongSelf.hasSavedKey = NO;
         [strongSelf setStatus:L(@"status_deleted") kind:StatusNeutral];
         [strongSelf updateButtonTitle];
         [strongSelf.view setNeedsLayout];

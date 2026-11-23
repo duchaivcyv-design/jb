@@ -4,8 +4,6 @@
 #import <Security/Security.h>
 
 static NSString *const kKeyService = @"com.puc.claudemini";
-// YES when Gemini should use the Google account (set by the person in the sign-in screen).
-static NSString *const kGeminiGoogleModeKey = @"gemini.useGoogleSignIn";
 
 // The Gemini names are the ones earlier versions used, so an existing key keeps working after an update.
 static NSString *AccountFor(AIProvider provider) {
@@ -50,9 +48,19 @@ static NSMutableDictionary *KeyCache(void) {
 }
 
 + (NSString *)loadKeyForProvider:(AIProvider)provider {
-    if (provider == AIProviderGemini && [self geminiUsesGoogleSignIn]) {
-        return [GoogleAuth accessTokenNonBlocking];   // not cached: the token changes every hour
+    NSString *stored = [self loadRawKeyForProvider:provider];
+    if (provider == AIProviderGemini && [GoogleAuth isSignedIn]) {
+        // Both a key and a Google sign-in: the one set up most recently wins (see GoogleAuth prefersGoogle).
+        if (stored.length == 0 || [GoogleAuth prefersGoogle]) return kGoogleOAuthKeyMarker;
     }
+    return stored;
+}
+
++ (BOOL)geminiUsesGoogleAccount {
+    return [[self loadKeyForProvider:AIProviderGemini] isEqualToString:kGoogleOAuthKeyMarker];
+}
+
++ (NSString *)loadRawKeyForProvider:(AIProvider)provider {
     NSNumber *cacheKey = @(provider);
     @synchronized (KeyCache()) {
         id cached = KeyCache()[cacheKey];
@@ -91,13 +99,12 @@ static NSMutableDictionary *KeyCache(void) {
 }
 
 + (BOOL)saveKey:(NSString *)key forProvider:(AIProvider)provider {
-    if (key.length == 0) return NO;
+    if (key.length == 0 || [key isEqualToString:kGoogleOAuthKeyMarker]) return NO;
     [self forgetCachedKeyForProvider:provider];
     if (provider == AIProviderGemini) {
-        [KeyTier invalidateGeminiDetection];   // a new key may be free or paid: detect again
-        // Saving an API key means the person wants to use it now, not the Google account.
-        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kGeminiGoogleModeKey];
-    }
+        [GoogleAuth setPrefersGoogle:NO];   // the person just entered a key: use it
+        [KeyTier invalidateGeminiDetection];
+    }   // a new key may be free or paid: detect again
     NSData *data = [key dataUsingEncoding:NSUTF8StringEncoding];
 
     SecItemDelete((__bridge CFDictionaryRef)[self baseQueryFor:provider]);
@@ -129,43 +136,70 @@ static NSMutableDictionary *KeyCache(void) {
 }
 
 + (BOOL)hasKeyForProvider:(AIProvider)provider {
-    if (provider == AIProviderGemini && [self geminiUsesGoogleSignIn]) return YES;   // token may not be loaded yet
     return [self loadKeyForProvider:provider].length > 0;
-}
-
-+ (BOOL)geminiUsesGoogleSignIn {
-    return [[NSUserDefaults standardUserDefaults] boolForKey:kGeminiGoogleModeKey] && [GoogleAuth isSignedIn];
-}
-
-+ (void)setGeminiUsesGoogleSignIn:(BOOL)useGoogle {
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setBool:useGoogle forKey:kGeminiGoogleModeKey];
-    [defaults synchronize];
-    @synchronized (KeyCache()) { [KeyCache() removeAllObjects]; }
-    [KeyTier invalidateGeminiDetection];   // the account may be free or paid: detect again
-}
-
-+ (NSString *)freshKeyForProvider:(AIProvider)provider {
-    if (provider == AIProviderGemini && [self geminiUsesGoogleSignIn]) {
-        return [GoogleAuth accessTokenBlocking];
-    }
-    return [self loadKeyForProvider:provider];
-}
-
-+ (void)applyGeminiCredential:(NSString *)credential toRequest:(NSMutableURLRequest *)request {
-    // Gemini API keys always start with "AIza". Anything else is an OAuth access token from Google sign-in.
-    BOOL isApiKey = [credential hasPrefix:@"AIza"];
-    if (!isApiKey && credential.length > 0 && [GoogleAuth isSignedIn]) {
-        [request setValue:[@"Bearer " stringByAppendingString:credential] forHTTPHeaderField:@"Authorization"];
-        NSString *projectID = [GoogleAuth cloudProjectID];
-        if (projectID.length > 0) [request setValue:projectID forHTTPHeaderField:@"x-goog-user-project"];
-    } else {
-        [request setValue:credential forHTTPHeaderField:@"x-goog-api-key"];
-    }
 }
 
 + (BOOL)hasAnyKey {
     return [self hasKeyForProvider:AIProviderGemini] || [self hasKeyForProvider:AIProviderClaude];
+}
+
+#pragma mark - Named secrets
+
++ (NSMutableDictionary *)secretQueryNamed:(NSString *)name {
+    return [@{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: kKeyService,
+        (__bridge id)kSecAttrAccount: name
+    } mutableCopy];
+}
+
++ (NSString *)secretPathNamed:(NSString *)name {
+    NSString *dir = [[self fallbackPathFor:AIProviderGemini] stringByDeletingLastPathComponent];   // also makes sure the folder exists
+    return [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"secret-%@.dat", name]];
+}
+
++ (NSString *)loadSecretNamed:(NSString *)name {
+    if (name.length == 0) return nil;
+    NSMutableDictionary *query = [self secretQueryNamed:name];
+    query[(__bridge id)kSecReturnData] = @YES;
+    query[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+    if (status == errSecSuccess && result != NULL) {
+        NSData *data = (__bridge_transfer NSData *)result;
+        NSString *value = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (value.length > 0) return value;
+    }
+    NSData *fileData = [NSData dataWithContentsOfFile:[self secretPathNamed:name]];
+    if (fileData.length > 0) {
+        NSString *value = [[NSString alloc] initWithData:fileData encoding:NSUTF8StringEncoding];
+        if (value.length > 0) return value;
+    }
+    return nil;
+}
+
++ (BOOL)saveSecret:(NSString *)secret named:(NSString *)name {
+    if (secret.length == 0 || name.length == 0) return NO;
+    NSData *data = [secret dataUsingEncoding:NSUTF8StringEncoding];
+    SecItemDelete((__bridge CFDictionaryRef)[self secretQueryNamed:name]);
+    NSMutableDictionary *add = [self secretQueryNamed:name];
+    add[(__bridge id)kSecValueData] = data;
+    add[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleAfterFirstUnlock;
+    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)add, NULL);
+    NSString *path = [self secretPathNamed:name];
+    if (status == errSecSuccess) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+        return YES;
+    }
+    BOOL ok = [data writeToFile:path options:NSDataWritingAtomic error:nil];
+    if (ok) [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0600} ofItemAtPath:path error:nil];
+    return ok;
+}
+
++ (void)deleteSecretNamed:(NSString *)name {
+    if (name.length == 0) return;
+    SecItemDelete((__bridge CFDictionaryRef)[self secretQueryNamed:name]);
+    [[NSFileManager defaultManager] removeItemAtPath:[self secretPathNamed:name] error:nil];
 }
 
 @end

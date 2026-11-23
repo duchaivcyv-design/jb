@@ -6,21 +6,20 @@
 // pseudo-signed), falls back to a 0600 file in Application Support.
 @interface KeyStore : NSObject
 
-+ (NSString *)loadKeyForProvider:(AIProvider)provider;      // nil if none
+// The credential the app uses for this provider. For Gemini it is kGoogleOAuthKeyMarker (see GoogleAuth.h) while a
+// Google sign-in is the active method; otherwise the pasted API key. nil if none.
++ (NSString *)loadKeyForProvider:(AIProvider)provider;
+// Only the pasted API key (never the Google marker). Used by the key-entry screen.
++ (NSString *)loadRawKeyForProvider:(AIProvider)provider;
++ (BOOL)geminiUsesGoogleAccount;
 + (BOOL)saveKey:(NSString *)key forProvider:(AIProvider)provider;
 + (void)deleteKeyForProvider:(AIProvider)provider;
 + (BOOL)hasKeyForProvider:(AIProvider)provider;
 + (BOOL)hasAnyKey;
 
-// Gemini can use a Google account instead of an API key. This is the person's choice. It only takes effect
-// while the Google sign-in is still valid; otherwise the saved API key is used.
-+ (BOOL)geminiUsesGoogleSignIn;
-+ (void)setGeminiUsesGoogleSignIn:(BOOL)useGoogle;
-
-// Like loadKeyForProvider, but refreshes a Google access token first. BLOCKS: call it only from a background queue.
-+ (NSString *)freshKeyForProvider:(AIProvider)provider;
-
-// Puts the Gemini credential on a request: an API key goes in x-goog-api-key, a Google token as a Bearer header.
-+ (void)applyGeminiCredential:(NSString *)credential toRequest:(NSMutableURLRequest *)request;
+// Small named secrets (e.g. the Google refresh token), stored the same way as the keys.
++ (NSString *)loadSecretNamed:(NSString *)name;
++ (BOOL)saveSecret:(NSString *)secret named:(NSString *)name;
++ (void)deleteSecretNamed:(NSString *)name;
 
 @end
