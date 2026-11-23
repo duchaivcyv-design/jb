@@ -528,13 +528,21 @@ static NSString *CleanKeyText(NSString *text) {
     return [[text componentsSeparatedByCharactersInSet:[plainAscii invertedSet]] componentsJoinedByString:@""];
 }
 
-// Takes the API key itself (starts with "AIza") out of whatever was pasted, so extra text or invisible
-// characters around it do not make the key invalid.
+// Takes the key out of whatever was pasted: the "AIza..." part if it is there, otherwise the longest run of
+// characters a key can contain. Google decides whether the key is valid; the phone does not reject it.
 static NSString *ApiKeyFromText(NSString *text) {
     NSString *cleaned = CleanKeyText(text);
-    NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"AIza[0-9A-Za-z_\\-]+" options:0 error:nil];
-    NSTextCheckingResult *match = [pattern firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
-    return match ? [cleaned substringWithRange:match.range] : cleaned;
+    NSRegularExpression *aiza = [NSRegularExpression regularExpressionWithPattern:@"AIza[0-9A-Za-z_\\-]+" options:0 error:nil];
+    NSTextCheckingResult *match = [aiza firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
+    if (match) return [cleaned substringWithRange:match.range];
+
+    NSRegularExpression *run = [NSRegularExpression regularExpressionWithPattern:@"[A-Za-z0-9_\\-]{20,}" options:0 error:nil];
+    NSString *best = nil;
+    for (NSTextCheckingResult *r in [run matchesInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)]) {
+        NSString *candidate = [cleaned substringWithRange:r.range];
+        if (!best || candidate.length > best.length) best = candidate;
+    }
+    return best ?: cleaned;
 }
 
 - (void)verifyTapped {
@@ -543,10 +551,6 @@ static NSString *ApiKeyFromText(NSString *text) {
 
     NSString *typed = ApiKeyFromText(self.keyField.text);
     BOOL fromField = typed.length > 0;
-    if (fromField && self.provider == AIProviderGemini && ![typed hasPrefix:@"AIza"]) {
-        [self setStatus:L(@"key_not_found") kind:StatusError];
-        return;
-    }
     NSString *key = fromField ? typed : [KeyStore loadKeyForProvider:self.provider];
     if (key.length == 0) {
         [self setStatus:L(@"status_empty") kind:StatusError];
