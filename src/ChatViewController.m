@@ -5,7 +5,6 @@
 #import "Strings.h"
 #import "Theme.h"
 #import "KeyStore.h"
-#import "GoogleAuth.h"
 #import "GeminiClient.h"
 #import "GeminiStream.h"
 #import "ClaudeClient.h"
@@ -22,18 +21,19 @@
 #import "ModelPickerViewController.h"
 #import "ModelPopupViewController.h"
 #import "ConfirmPopupViewController.h"
+#import "ChoicePopupViewController.h"
 #import "UpdateManager.h"
 #import "KeyTier.h"
 #import "OfficeExport.h"
 #import "VoiceChatManager.h"
+#import "FontStyle.h"
+#import "Material.h"
 #import <math.h>
 
 static const CGFloat kMaxInputHeight = 120;
 static const CGFloat kStripHeight = 64;
 static const CGFloat kToolsRowHeight = 0;
 static const NSUInteger kGreetingCount = 6;
-static const NSUInteger kForceMaxContextChars = 4000000;
-static const NSUInteger kFastChunkReadBytes = 4 * 1024 * 1024;
 
 #pragma mark - Weak script handler
 
@@ -99,6 +99,7 @@ static UIImage *DrawCrossIconImage(CGFloat size, UIColor *color) {
     return [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
+// A solid cog with eight teeth and a round hole, drawn with code (no emoji, no system symbol) so it looks the same on every iOS version.
 static UIImage *DrawSettingsGearIconImage(CGFloat size, UIColor *color) {
     UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0);
     CGPoint c = CGPointMake(size * 0.5, size * 0.5);
@@ -144,232 +145,6 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
     return [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 }
 
-#pragma mark - Forward Declarations & Interfaces
-
-@class ChatViewController;
-
-@interface ChatViewController (VoiceIntegration)
-@property (strong, nonatomic) VoiceChatManager *voiceManager;
-@property (strong, nonatomic) UITextView *textView;
-@property (assign, nonatomic) BOOL activeFullScreenVoice;
-@property (assign, nonatomic) NSInteger activeVoiceStyleIndex;
-- (void)textViewDidChange:(UITextView *)textView;
-- (void)sendTapped;
-- (void)speakLastAssistantMessage;
-@end
-
-#pragma mark - VoiceChatFullScreenViewController
-
-@interface VoiceChatFullScreenViewController : UIViewController
-@property (assign, nonatomic) NSInteger selectedVoiceIndex;
-@property (strong, nonatomic) ChatViewController *chatController;
-- (void)onAssistantStartedSpeaking:(NSString *)text;
-- (void)onAssistantFinishedSpeaking;
-@end
-
-@implementation VoiceChatFullScreenViewController {
-    UIView *_blueLightView1;
-    UIView *_blueLightView2;
-    UILabel *_statusLabel;
-    UIButton *_micButton;
-    BOOL _isListening;
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithRed:0.05 green:0.08 blue:0.15 alpha:1.0];
-    [self setupMovingBlueLights];
-
-    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeBtn.frame = CGRectMake(20, 50, 40, 40);
-    [closeBtn setImage:[Theme iconClose] forState:UIControlStateNormal];
-    closeBtn.tintColor = [UIColor whiteColor];
-    [closeBtn addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:closeBtn];
-
-    CGFloat screenW = CGRectGetWidth(self.view.bounds);
-    CGFloat screenH = CGRectGetHeight(self.view.bounds);
-
-    UIView *centerOrb = [[UIView alloc] initWithFrame:CGRectMake((screenW - 140)/2, (screenH - 140)/2 - 40, 140, 140)];
-    centerOrb.layer.cornerRadius = 70;
-    centerOrb.backgroundColor = [[UIColor colorWithRed:0.2 green:0.6 blue:1.0 alpha:0.3] colorWithAlphaComponent:0.4];
-    centerOrb.layer.shadowColor = [UIColor colorWithRed:0.1 green:0.5 blue:1.0 alpha:1.0].CGColor;
-    centerOrb.layer.shadowOpacity = 0.8;
-    centerOrb.layer.shadowRadius = 30;
-    centerOrb.layer.shadowOffset = CGSizeZero;
-    [self.view addSubview:centerOrb];
-
-    CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
-    pulse.fromValue = @1.0;
-    pulse.toValue = @1.15;
-    pulse.autoreverses = YES;
-    pulse.repeatCount = HUGE_VALF;
-    pulse.duration = 2.0;
-    [centerOrb.layer addAnimation:pulse forKey:@"pulse"];
-
-    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, CGRectGetMaxY(centerOrb.frame) + 30, screenW - 40, 60)];
-    _statusLabel.text = @"Đang sẵn sàng trò chuyện...";
-    _statusLabel.textColor = [UIColor whiteColor];
-    _statusLabel.textAlignment = NSTextAlignmentCenter;
-    _statusLabel.numberOfLines = 2;
-    _statusLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
-    [self.view addSubview:_statusLabel];
-
-    _micButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    _micButton.frame = CGRectMake((screenW - 80)/2, screenH - 120, 80, 80);
-    _micButton.layer.cornerRadius = 40;
-    _micButton.backgroundColor = [UIColor colorWithRed:0.1 green:0.5 blue:0.9 alpha:1.0];
-    [_micButton setImage:[Theme iconMicOfSize:36] forState:UIControlStateNormal];
-    _micButton.tintColor = [UIColor whiteColor];
-    [_micButton addTarget:self action:@selector(micButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:_micButton];
-
-    self.chatController.activeFullScreenVoice = YES;
-    self.chatController.activeVoiceStyleIndex = self.selectedVoiceIndex;
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self startVoiceSession];
-    });
-}
-
-- (void)configureAudioSessionForPlayback:(BOOL)forPlayback {
-    NSError *error = nil;
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    AVAudioSessionCategoryOptions opts = AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth;
-    [session setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:opts error:&error];
-    [session setMode:(forPlayback ? AVAudioSessionModeDefault : AVAudioSessionModeMeasurement) error:&error];
-    [session setActive:YES withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&error];
-}
-
-- (void)setupMovingBlueLights {
-    CGFloat screenW = CGRectGetWidth(self.view.bounds);
-    CGFloat screenH = CGRectGetHeight(self.view.bounds);
-
-    _blueLightView1 = [[UIView alloc] initWithFrame:CGRectMake(-50, -50, 300, 300)];
-    _blueLightView1.layer.cornerRadius = 150;
-    _blueLightView1.backgroundColor = [UIColor colorWithRed:0.0 green:0.4 blue:0.8 alpha:0.35];
-    _blueLightView1.clipsToBounds = YES;
-    [self.view addSubview:_blueLightView1];
-
-    _blueLightView2 = [[UIView alloc] initWithFrame:CGRectMake(screenW - 250, screenH - 250, 350, 350)];
-    _blueLightView2.layer.cornerRadius = 175;
-    _blueLightView2.backgroundColor = [UIColor colorWithRed:0.1 green:0.7 blue:0.9 alpha:0.3];
-    [self.view addSubview:_blueLightView2];
-
-    [UIView animateKeyframesWithDuration:8.0 delay:0 options:UIViewKeyframeAnimationOptionAutoreverse | UIViewKeyframeAnimationOptionRepeat animations:^{
-        [UIView addKeyframeWithRelativeStartTime:0 relativeDuration:0.5 animations:^{
-            self->_blueLightView1.frame = CGRectMake(screenW - 200, screenH / 3, 350, 350);
-            self->_blueLightView2.frame = CGRectMake(50, 100, 300, 300);
-        }];
-        [UIView addKeyframeWithRelativeStartTime:0.5 relativeDuration:0.5 animations:^{
-            self->_blueLightView1.frame = CGRectMake(50, screenH - 300, 320, 320);
-            self->_blueLightView2.frame = CGRectMake(screenW - 250, 80, 360, 360);
-        }];
-    } completion:nil];
-}
-
-- (void)closeTapped {
-    self.chatController.activeFullScreenVoice = NO;
-    if (self.chatController.voiceManager) {
-        [self.chatController.voiceManager stopRecording];
-        [self.chatController.voiceManager stopSpeaking];
-    }
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)onAssistantStartedSpeaking:(NSString *)text {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self configureAudioSessionForPlayback:YES];
-        self->_isListening = NO;
-        [self resetMicButtonState];
-        self->_statusLabel.text = @"AI đang trả lời bằng giọng nói...";
-    });
-}
-
-- (void)onAssistantFinishedSpeaking {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (!self.view.window || !self.chatController.activeFullScreenVoice) return;
-        [self startVoiceSession];
-    });
-}
-
-- (void)startVoiceSession {
-    if (!self.chatController.voiceManager) {
-        self.chatController.voiceManager = [VoiceChatManager shared];
-    }
-    [self.chatController.voiceManager stopSpeaking];
-    [self configureAudioSessionForPlayback:NO];
-
-    _statusLabel.text = @"Đang lắng nghe...";
-    _isListening = YES;
-    _micButton.backgroundColor = [UIColor colorWithRed:0.9 green:0.2 blue:0.2 alpha:1.0];
-
-    __weak typeof(self) weakSelf = self;
-    [self.chatController.voiceManager requestAuthorization:^(BOOL granted) {
-        if (!granted) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self->_statusLabel.text = @"Cần quyền microphone.";
-                [self resetMicButtonState];
-            });
-            return;
-        }
-        [weakSelf.chatController.voiceManager startRecordingWithPartial:^(NSString *text) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (text.length > 0) {
-                    self->_statusLabel.text = text;
-                }
-            });
-        } final:^(NSString *text) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSString *clean = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                if (clean.length > 0) {
-                    self->_isListening = NO;
-                    [weakSelf resetMicButtonState];
-                    self->_statusLabel.text = [NSString stringWithFormat:@"Đã gửi: %@", clean];
-                    [weakSelf sendVoiceTextToAI:clean];
-                } else {
-                    self->_statusLabel.text = @"Không nghe rõ, thử lại nhé.";
-                    [weakSelf resetMicButtonState];
-                }
-            });
-        } error:^(NSString *msg) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self->_statusLabel.text = msg ?: @"Lỗi ghi âm.";
-                [weakSelf resetMicButtonState];
-            });
-        }];
-    }];
-}
-
-- (void)micButtonTapped {
-    if (_isListening) {
-        [self.chatController.voiceManager stopRecording];
-        _isListening = NO;
-        [self resetMicButtonState];
-        _statusLabel.text = @"Đã tạm dừng mic. Nhấn để nói tiếp.";
-    } else {
-        [self startVoiceSession];
-    }
-}
-
-- (void)resetMicButtonState {
-    _isListening = NO;
-    _micButton.backgroundColor = [UIColor colorWithRed:0.1 green:0.5 blue:0.9 alpha:1.0];
-}
-
-- (void)sendVoiceTextToAI:(NSString *)text {
-    [self.chatController.voiceManager stopRecording];
-    [self configureAudioSessionForPlayback:YES];
-    self.chatController.activeFullScreenVoice = YES;
-    self.chatController.activeVoiceStyleIndex = self.selectedVoiceIndex;
-    _statusLabel.text = @"AI đang suy nghĩ...";
-    self.chatController.textView.text = text;
-    [self.chatController textViewDidChange:self.chatController.textView];
-    [self.chatController sendTapped];
-}
-
-@end
-
 #pragma mark - ChatViewController
 
 @interface ChatViewController () <WKNavigationDelegate, ScriptMessageTarget, UITextViewDelegate,
@@ -379,8 +154,10 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (strong, nonatomic) WKWebView *webView;
 @property (assign, nonatomic) BOOL webReady;
 @property (copy, nonatomic) NSString *lastWebError;
-@property (nonatomic, strong) dispatch_queue_t jsSerializationQueue;
+
+// Half-width History Drawer + shifted Chat Stage
 @property (assign, nonatomic) BOOL historyDrawerOpen;
+@property (assign, nonatomic) BOOL historyPinned;   // iPhone Duo / wide screen: the history list is a fixed pane on the left
 @property (strong, nonatomic) UIView *historyDrawerView;
 @property (strong, nonatomic) UIView *historySearchWrap;
 @property (strong, nonatomic) UIImageView *historySearchIcon;
@@ -399,6 +176,7 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (strong, nonatomic) UIButton *historyCloseXButton;
 @property (strong, nonatomic) UIButton *historySettingsButton;
 @property (strong, nonatomic) UIButton *chatRightOverlayButton;
+@property (strong, nonatomic) UIVisualEffectView *chatBlurView;   // blurs the chat while the history drawer is open
 @property (strong, nonatomic) NSArray<NSDictionary *> *historyAllItems;
 @property (strong, nonatomic) NSArray<NSDictionary *> *historyFilteredItems;
 
@@ -424,13 +202,14 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (strong, nonatomic) UIButton *sendButton;
 @property (strong, nonatomic) VoiceChatManager *voiceManager;
 @property (assign, nonatomic) BOOL voiceRecording;
-@property (assign, nonatomic) BOOL activeFullScreenVoice;
-@property (assign, nonatomic) NSInteger activeVoiceStyleIndex;
-@property (assign, nonatomic) BOOL lastWasStreaming;
+@property (copy, nonatomic) NSString *dictationBase;          // what was typed before the mic was pressed
+@property (assign, nonatomic) BOOL dictationUserEdited;       // the user typed while dictating: the spoken text no longer overwrites
+@property (assign, nonatomic) BOOL applyingDictation;
 @property (strong, nonatomic) UIButton *modelButton;
 @property (assign, nonatomic) BOOL pendingModelPopup;
 @property (assign, nonatomic) BOOL pendingModelPopupIntro;
 @property (strong, nonatomic) UIImageView *wallpaperView;
+@property (strong, nonatomic) MaterialGradientView *gradientView;   // the moving accent gradient wallpaper
 @property (strong, nonatomic) UIView *dimView;
 @property (assign, nonatomic) CGFloat keyboardOverlap;
 
@@ -450,10 +229,18 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (strong, nonatomic) dispatch_source_t deltaFlushTimer;
 @property (strong, nonatomic) NSMutableString *longReplyAccumulator;
 @property (assign, nonatomic) NSUInteger longReplyContinuationCount;
+@property (assign, nonatomic) NSUInteger earlyEndContinuations;   // continuations after a stream that closed quietly (capped: a provider that never sends its final event must not loop)
+@property (assign, nonatomic) UIBackgroundTaskIdentifier replyBackgroundTask;
+@property (assign, nonatomic) BOOL replyBackgroundTaskActive;
 @property (strong, nonatomic) NSMutableArray *streamGeneratedAttachments;
 
 @property (strong, nonatomic) NSMutableArray *pendingAttachments;
 @property (assign, nonatomic) NSInteger importsInFlight;
+@property (strong, nonatomic) NSTimer *thinkingTimer;
+@property (assign, nonatomic) BOOL toolsDisabledForReply;   // the provider refused search/code tools for this reply
+@property (assign, nonatomic) BOOL requestUsedTools;        // the current request carried a search or code tool
+@property (assign, nonatomic) BOOL searchAllowedForReply;   // search is on for the current request
+@property (assign, nonatomic) CFAbsoluteTime thinkingStart;
 @end
 
 @implementation ChatViewController
@@ -468,7 +255,6 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
     self.chatIsEmpty = YES;
     self.view.clipsToBounds = YES;
     self.greetingIndex = arc4random_uniform((uint32_t)kGreetingCount);
-    self.jsSerializationQueue = dispatch_queue_create("com.app.chat.jsserialization", DISPATCH_QUEUE_SERIAL);
 
     self.chatStageView = [[UIView alloc] initWithFrame:self.view.bounds];
     self.chatStageView.backgroundColor = [Theme background];
@@ -502,6 +288,7 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
     [center addObserver:self selector:@selector(historyCleared:) name:kNotifHistoryCleared object:nil];
     [center addObserver:self selector:@selector(conversationDeleted:) name:kNotifConversationDeleted object:nil];
     [center addObserver:self selector:@selector(applyTheme) name:kNotifThemeChanged object:nil];
+    [center addObserver:self selector:@selector(layoutChanged) name:kNotifLayoutChanged object:nil];
     [center addObserver:self selector:@selector(updateStateChanged) name:kNotifUpdateChanged object:nil];
 
     NSMutableSet *keep = [NSMutableSet set];
@@ -533,8 +320,37 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 
 - (void)dealloc {
     [self stopDeltaFlushTimer];
+    [UIApplication sharedApplication].idleTimerDisabled = NO;
+    if (self.replyBackgroundTaskActive) [[UIApplication sharedApplication] endBackgroundTask:self.replyBackgroundTask];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self.webView.configuration.userContentController removeScriptMessageHandlerForName:@"native"];
+}
+
+// While a reply is being written the screen must not auto-lock (a locked phone suspends the app and cuts the connection), and a short
+// trip to another app gets a little extra running time. Both are released as soon as the reply ends.
+- (void)setStreaming:(BOOL)streaming {
+    _streaming = streaming;
+    UIApplication *app = [UIApplication sharedApplication];
+    if (streaming) {
+        app.idleTimerDisabled = YES;
+        if (!self.replyBackgroundTaskActive) {
+            __weak typeof(self) weakSelf = self;
+            self.replyBackgroundTask = [app beginBackgroundTaskWithName:@"chat-reply" expirationHandler:^{
+                ChatViewController *me = weakSelf;
+                if (me && me.replyBackgroundTaskActive) {
+                    me.replyBackgroundTaskActive = NO;
+                    [[UIApplication sharedApplication] endBackgroundTask:me.replyBackgroundTask];
+                }
+            }];
+            self.replyBackgroundTaskActive = YES;
+        }
+    } else {
+        app.idleTimerDisabled = NO;
+        if (self.replyBackgroundTaskActive) {
+            self.replyBackgroundTaskActive = NO;
+            [app endBackgroundTask:self.replyBackgroundTask];
+        }
+    }
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -560,17 +376,50 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
     }
 }
 
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    if (self.voiceRecording) [self.voiceManager cancelDictation];   // leaving the chat (Settings, ...): stop listening
+}
+
 - (UIStatusBarStyle)preferredStatusBarStyle {
     return [Theme darkMode] ? UIStatusBarStyleLightContent : UIStatusBarStyleDefault;
 }
 
-#pragma mark - History Drawer
+#pragma mark - History Drawer (the whole chat slides to the right; it is never squeezed)
 
 static const CGFloat kDrawerWidthRatio = 0.62;
 
 - (CGFloat)historyDrawerWidth {
     CGFloat w = self.view.bounds.size.width;
-    return MIN(floor(w * kDrawerWidthRatio), 320.0);
+    CGFloat safeLeft = 0;
+    if (@available(iOS 11.0, *)) safeLeft = self.view.safeAreaInsets.left;   // the notch side of a phone on its side
+    if ([self duoActive]) return MIN(floor(w * 0.5), [AppSettings duoSidebarBaseWidth]) + safeLeft;
+    return MIN(floor(w * kDrawerWidthRatio), 320.0) + safeLeft;
+}
+
+// iPhone Duo / wide screen: two panes (the history list stays on the left of the chat).
+- (BOOL)duoActive {
+    return [AppSettings duoActiveForSize:self.view.bounds.size];
+}
+
+- (BOOL)duoPinned {
+    return [self duoActive] && ![AppSettings duoSidebarCollapsed];
+}
+
+// Rotation, another layout chosen in Settings, or the left pane folded away: lay everything out again, smoothly.
+- (void)layoutChanged {
+    [self.view endEditing:YES];
+    void (^relayout)(void) = ^{
+        [self.view setNeedsLayout];
+        [self.view layoutIfNeeded];
+    };
+    if ([Material active]) [Material animateEmphasizedDecelerate:MaterialDurationMedium4 animations:relayout completion:nil];
+    else [UIView animateWithDuration:0.28 delay:0 options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction animations:relayout completion:nil];
+}
+
+// The pinned list shows the open chat highlighted: refresh it when the chats change.
+- (void)refreshPinnedSidebar {
+    if (self.historyPinned) [self reloadHistoryItems];
 }
 
 - (void)setupHistoryDrawer {
@@ -582,6 +431,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.historyDrawerView.hidden = YES;
     [self.view addSubview:self.historyDrawerView];
 
+    // Search sits at the top, level with the close button.
     self.historySearchWrap = [[UIView alloc] initWithFrame:CGRectZero];
     self.historySearchWrap.backgroundColor = [Theme background];
     self.historySearchWrap.layer.cornerRadius = 12;
@@ -609,9 +459,11 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self refreshHistorySearchPlaceholder];
 
     self.historyTableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    [Material installTableEffects:self.historyTableView];   // Material 3 press feedback (does nothing in the Classic design)
     self.historyTableView.backgroundColor = [UIColor clearColor];
     self.historyTableView.separatorColor = [Theme border];
     self.historyTableView.separatorInset = UIEdgeInsetsMake(0, 16, 0, 0);
+    self.historyTableView.cellLayoutMarginsFollowReadableWidth = NO;
     self.historyTableView.tableFooterView = [[UIView alloc] initWithFrame:CGRectZero];
     self.historyTableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     self.historyTableView.dataSource = self;
@@ -637,6 +489,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self.historyCloseXButton addTarget:self action:@selector(closeHistoryDrawer) forControlEvents:UIControlEventTouchUpInside];
     [self.historyDrawerView addSubview:self.historyCloseXButton];
 
+    // Settings: a full-width row with a coloured badge and a word, so a new user can see it at a glance.
     self.historySettingsButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.historySettingsButton.backgroundColor = [Theme background];
     self.historySettingsButton.layer.cornerRadius = 16;
@@ -672,6 +525,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.historySettingsChevron.contentMode = UIViewContentModeCenter;
     [self.historySettingsButton addSubview:self.historySettingsChevron];
 
+    // A small dot on the cog when a new version is waiting (found by the update check).
     self.historyUpdateDot = [[UIView alloc] initWithFrame:CGRectZero];
     self.historyUpdateDot.userInteractionEnabled = NO;
     self.historyUpdateDot.backgroundColor = [Theme accent];
@@ -682,8 +536,12 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self.historySettingsBadge addSubview:self.historyUpdateDot];
 
     self.chatRightOverlayButton = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.chatRightOverlayButton.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.14];
+    self.chatRightOverlayButton.backgroundColor = [UIColor clearColor];
     self.chatRightOverlayButton.hidden = YES;
+    self.chatBlurView = [[UIVisualEffectView alloc] initWithEffect:nil];   // the effect is set while the drawer opens
+    self.chatBlurView.userInteractionEnabled = NO;
+    self.chatBlurView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.chatRightOverlayButton addSubview:self.chatBlurView];
     [self.chatRightOverlayButton addTarget:self action:@selector(closeHistoryDrawer) forControlEvents:UIControlEventTouchUpInside];
     UISwipeGestureRecognizer *swipe = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(closeHistoryDrawer)];
     swipe.direction = UISwipeGestureRecognizerDirectionLeft;
@@ -696,6 +554,10 @@ static const CGFloat kDrawerWidthRatio = 0.62;
         [[NSAttributedString alloc] initWithString:L(@"search_chip_title")
                                         attributes:@{ NSForegroundColorAttributeName: [[Theme secondaryText] colorWithAlphaComponent:0.85],
                                                       NSFontAttributeName: [UIFont systemFontOfSize:15] }];
+}
+
+- (UIBlurEffect *)chatBlurEffect {
+    return [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleDark : UIBlurEffectStyleLight];
 }
 
 - (void)updateStateChanged {
@@ -753,14 +615,24 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self.historyTableView reloadData];
 }
 
+// Where the chat stage sits: pushed to the right by the drawer width when the drawer is open. Only the position changes, never the size.
 - (CGPoint)chatStageCenterOpen:(BOOL)open {
     CGFloat w = self.view.bounds.size.width;
     CGFloat h = self.view.bounds.size.height;
-    return CGPointMake(w / 2.0 + (open ? [self historyDrawerWidth] : 0), h / 2.0);
+    UIEdgeInsets safe = UIEdgeInsetsZero;
+    if (@available(iOS 11.0, *)) safe = self.view.safeAreaInsets;
+    CGFloat contentW = w - safe.left - safe.right;          // the stage keeps clear of the notch when the phone is on its side
+    return CGPointMake(safe.left + contentW / 2.0 + (open ? [self historyDrawerWidth] - safe.left : 0), h / 2.0);
 }
 
 - (void)historyTapped {
     [self.view endEditing:YES];
+    if ([self duoActive]) {
+        // Two panes: the menu button folds the left pane away or brings it back.
+        [AppSettings setDuoSidebarCollapsed:![AppSettings duoSidebarCollapsed]];
+        [self layoutChanged];
+        return;
+    }
     if (self.historyDrawerOpen) {
         [self closeHistoryDrawer];
         return;
@@ -770,7 +642,8 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.historyDrawerAnimating = YES;
     self.historyDrawerView.hidden = NO;
     self.chatRightOverlayButton.hidden = NO;
-    self.chatRightOverlayButton.alpha = 0;
+    self.chatBlurView.frame = self.chatRightOverlayButton.bounds;
+    self.chatBlurView.effect = nil;
     [self.view bringSubviewToFront:self.historyDrawerView];
     [self callJS:@"setDrawer" args:@[@YES]];
 
@@ -780,15 +653,20 @@ static const CGFloat kDrawerWidthRatio = 0.62;
         self.historyDrawerView.frame = CGRectMake(-drawerW, 0, drawerW, h);
         [self layoutHistoryDrawerSubviews];
     }
-    [UIView animateWithDuration:0.36 delay:0 usingSpringWithDamping:0.95 initialSpringVelocity:0.1
-                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
-                     animations:^{
+    void (^openAnimations)(void) = ^{
         self.historyDrawerView.frame = CGRectMake(0, 0, drawerW, h);
         self.chatStageView.center = [self chatStageCenterOpen:YES];
-        self.chatRightOverlayButton.alpha = 1;
-    } completion:^(BOOL finished) {
-        self.historyDrawerAnimating = NO;
-    }];
+        self.chatBlurView.effect = [self chatBlurEffect];   // the chat fades into a blur
+    };
+    void (^openDone)(BOOL) = ^(BOOL finished) { self.historyDrawerAnimating = NO; };
+    if ([Material active]) {
+        // Material 3: the drawer enters with the emphasized decelerate curve (400 ms)
+        [Material animateEmphasizedDecelerate:MaterialDurationMedium4 animations:openAnimations completion:openDone];
+    } else {
+        [UIView animateWithDuration:0.36 delay:0 usingSpringWithDamping:0.95 initialSpringVelocity:0.1
+                            options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                         animations:openAnimations completion:openDone];
+    }
 }
 
 - (void)closeHistoryDrawer {
@@ -800,17 +678,23 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
     CGFloat h = self.view.bounds.size.height;
     CGFloat drawerW = [self historyDrawerWidth];
-    [UIView animateWithDuration:0.30 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction animations:^{
+    void (^closeAnimations)(void) = ^{
         self.historyDrawerView.frame = CGRectMake(-drawerW, 0, drawerW, h);
         self.chatStageView.center = [self chatStageCenterOpen:NO];
-        self.chatRightOverlayButton.alpha = 0;
-    } completion:^(BOOL finished) {
-        if (self.historyDrawerOpen) return;
+        self.chatBlurView.effect = nil;
+    };
+    void (^closeDone)(BOOL) = ^(BOOL finished) {
+        if (self.historyDrawerOpen) return;   // opened again while closing
         self.historyDrawerAnimating = NO;
         self.historyDrawerView.hidden = YES;
         self.chatRightOverlayButton.hidden = YES;
-        self.chatRightOverlayButton.alpha = 1;
-    }];
+    };
+    if ([Material active]) {
+        // Material 3: leaving is quicker than entering (emphasized accelerate, 250 ms)
+        [Material animateEmphasizedAccelerate:MaterialDurationMedium1 animations:closeAnimations completion:closeDone];
+    } else {
+        [UIView animateWithDuration:0.30 delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction animations:closeAnimations completion:closeDone];
+    }
 }
 
 - (UIViewController *)topPresentedController {
@@ -839,6 +723,8 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     NSString *title = [item[@"title"] isKindOfClass:[NSString class]] && [item[@"title"] length] > 0 ? item[@"title"] : L(@"history_title");
     cell.textLabel.text = title;
     cell.textLabel.textColor = [Theme text];
+    BOOL isOpen = self.historyPinned && [item[@"id"] isKindOfClass:[NSString class]] && [item[@"id"] isEqualToString:self.conversation[@"id"]];
+    cell.backgroundColor = isOpen ? [[Theme accent] colorWithAlphaComponent:0.12] : [UIColor clearColor];
     return cell;
 }
 
@@ -869,12 +755,17 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     }
     BOOL keyboardUp = self.keyboardOverlap > 0 && self.historySearchField.isFirstResponder;
 
-    CGFloat rowH = 38;
+    CGFloat leftSafe = 0;
+    if (@available(iOS 11.0, *)) leftSafe = self.view.safeAreaInsets.left;
+    CGFloat rowH = 38;                       // search pill and close button share one row
     CGFloat closeSize = rowH;
     CGFloat sideGap = 12;
+    CGFloat sideX = sideGap + leftSafe;      // left edge of the content, clear of the notch
+    CGFloat sideW = dw - sideX - sideGap;
+    CGFloat closeW = self.historyPinned ? 0 : closeSize + 8;   // no close button in the fixed pane
     self.historyCloseXButton.frame = CGRectMake(dw - sideGap - closeSize, topPad, closeSize, closeSize);
     self.historyCloseXButton.layer.cornerRadius = closeSize / 2.0;
-    self.historySearchWrap.frame = CGRectMake(sideGap, topPad, MAX(60, dw - sideGap * 2 - closeSize - 8), rowH);
+    self.historySearchWrap.frame = CGRectMake(sideX, topPad, MAX(60, sideW - closeW), rowH);
     CGFloat sw = self.historySearchWrap.bounds.size.width;
     self.historySearchIcon.frame = CGRectMake(10, (rowH - 16) / 2.0, 16, 16);
     self.historySearchField.frame = CGRectMake(32, 0, MAX(20, sw - 32 - 8), rowH);
@@ -882,7 +773,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     CGFloat settingsH = 52;
     CGFloat settingsY = dh - bottomPad - settingsH;
     self.historySettingsButton.hidden = keyboardUp;
-    self.historySettingsButton.frame = CGRectMake(sideGap, settingsY, dw - sideGap * 2, settingsH);
+    self.historySettingsButton.frame = CGRectMake(sideX, settingsY, sideW, settingsH);
     CGFloat bw = self.historySettingsButton.bounds.size.width;
     self.historySettingsBadge.frame = CGRectMake(10, (settingsH - 32) / 2.0, 32, 32);
     self.historySettingsIcon.frame = self.historySettingsBadge.bounds;
@@ -893,7 +784,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     CGFloat listTop = topPad + rowH + 10;
     CGFloat listBottom = keyboardUp ? (dh - self.keyboardOverlap - 8) : (settingsY - 10);
     self.historyTableView.frame = CGRectMake(0, listTop, dw, MAX(60, listBottom - listTop));
-    self.historyEmptyLabel.frame = CGRectMake(16, listTop + 24, dw - 32, 44);
+    self.historyEmptyLabel.frame = CGRectMake(16 + leftSafe, listTop + 24, dw - 32 - leftSafe, 44);
 }
 
 #pragma mark - Setup
@@ -913,6 +804,9 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.dimView = [[UIView alloc] init];
     self.dimView.userInteractionEnabled = NO;
     [self.wallpaperView addSubview:self.dimView];
+    self.gradientView = [[MaterialGradientView alloc] init];
+    self.gradientView.hidden = YES;
+    [self.chatStageView addSubview:self.gradientView];
 
     self.webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:config];
     self.webView.navigationDelegate = self;
@@ -928,6 +822,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     }
     self.webView.alpha = 0.0;
     [self.chatStageView addSubview:self.webView];
+    // An empty chat cannot be scrolled, so a tap on the page is how the keyboard is put away.
     UITapGestureRecognizer *dismissTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(webViewTappedToDismissKeyboard)];
     dismissTap.cancelsTouchesInView = NO;
     dismissTap.delegate = self;
@@ -946,6 +841,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
 - (void)unlockWebViewScrolling {
     if (!self.webView) return;
+    // While the chat is empty the page is pinned (nothing to scroll, no rubber band), so the greeting card stays put.
     BOOL locked = self.chatIsEmpty;
     UIScrollView *sv = self.webView.scrollView;
     self.webView.userInteractionEnabled = YES;
@@ -999,7 +895,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
     self.inputBox = [[UIView alloc] init];
     self.inputBox.backgroundColor = [Theme surface];
-    self.inputBox.layer.cornerRadius = 22;
+    self.inputBox.layer.cornerRadius = 23;   // set again in the layout from the real height
     self.inputBox.layer.borderWidth = 1;
     self.inputBox.layer.borderColor = [Theme border].CGColor;
     [self.inputBar addSubview:self.inputBox];
@@ -1059,9 +955,36 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [super viewDidLayoutSubviews];
     CGFloat w = self.view.bounds.size.width;
     CGFloat h = self.view.bounds.size.height;
+    UIEdgeInsets safe = UIEdgeInsetsZero;
+    if (@available(iOS 11.0, *)) safe = self.view.safeAreaInsets;
     CGFloat drawerW = [self historyDrawerWidth];
+    BOOL pinned = [self duoPinned];
+    BOOL wasPinned = self.historyPinned;
+    self.historyPinned = pinned;
 
-    self.chatStageView.bounds = CGRectMake(0, 0, w, h);
+    if (pinned) {
+        // Two panes: list on the left, chat on the right. The overlay drawer is not used.
+        if (self.historyDrawerOpen || self.historyDrawerAnimating) {
+            self.historyDrawerOpen = NO;
+            self.historyDrawerAnimating = NO;
+            [self callJS:@"setDrawer" args:@[@NO]];
+        }
+        CGFloat stageW = MAX(240, w - drawerW - safe.right);
+        self.chatStageView.bounds = CGRectMake(0, 0, stageW, h);
+        self.chatStageView.center = CGPointMake(drawerW + stageW / 2.0, h / 2.0);
+        self.historyDrawerView.hidden = NO;
+        self.historyDrawerView.frame = CGRectMake(0, 0, drawerW, h);
+        self.historyCloseXButton.hidden = YES;
+        self.chatRightOverlayButton.hidden = YES;
+        if (!wasPinned) [self reloadHistoryItems];
+        [self layoutHistoryDrawerSubviews];
+        [self layoutChatStageSubviews];
+        return;
+    }
+    self.historyCloseXButton.hidden = NO;
+
+    // The stage keeps its full size at all times (so the greeting never re-wraps); the drawer only moves it sideways.
+    self.chatStageView.bounds = CGRectMake(0, 0, MAX(200, w - safe.left - safe.right), h);
     if (!self.historyDrawerAnimating) {
         self.chatStageView.center = [self chatStageCenterOpen:self.historyDrawerOpen];
     }
@@ -1124,6 +1047,8 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.fastButton.frame = CGRectMake(toolWidth * 2, 0, toolWidth, kToolsRowHeight);
     self.mentionButton.frame = CGRectMake(toolWidth * 3, 0, toolWidth, kToolsRowHeight);
     self.inputBox.frame = CGRectMake(12, boxY, boxWidth, boxHeight);
+    // A corner radius larger than half the height bends the ends of the pill into points: never go over it.
+    self.inputBox.layer.cornerRadius = MIN(MR(22, 28), boxHeight / 2.0);
 
     CGFloat centerY = round((boxHeight - 36.0) * 0.5);
     self.attachButton.frame = CGRectMake(5, centerY, 36, 36);
@@ -1139,6 +1064,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
     self.webView.frame = CGRectMake(0, 0, width, CGRectGetMinY(self.inputBar.frame));
     self.wallpaperView.frame = self.webView.frame;
+    self.gradientView.frame = self.webView.frame;
     self.dimView.frame = self.wallpaperView.bounds;
     self.chatRightOverlayButton.frame = self.chatStageView.bounds;
     if (self.historyDrawerOpen) {
@@ -1195,7 +1121,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
                                                             (CGRectGetHeight(self.view.bounds) - cardHeight) / 2.0,
                                                             cardWidth, cardHeight)];
     card.backgroundColor = [Theme surface];
-    card.layer.cornerRadius = 25.0;
+    card.layer.cornerRadius = MR(25, 28);
     card.layer.borderWidth = 1.0;
     card.layer.borderColor = [Theme border].CGColor;
     card.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -1250,7 +1176,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self updateReasoningFastButton];
 
     self.reasoningFastHintLabel = [[UILabel alloc] initWithFrame:CGRectMake(22, 277, contentWidth, 42)];
-    self.reasoningFastHintLabel.text = @"Mức thấp ưu tiên tốc độ phản hồi cực nhanh; mức cao/MAX ×8 ép suy nghĩ sâu và chi tiết tối đa.";
+    self.reasoningFastHintLabel.text = @"Khi kéo suy luận cao và bật Tăng tốc ×10, hệ thống ưu tiên tốc độ phản hồi tối đa (tốn token/chi phí hơn).";
     self.reasoningFastHintLabel.font = [UIFont systemFontOfSize:13];
     self.reasoningFastHintLabel.numberOfLines = 2;
     self.reasoningFastHintLabel.textColor = [Theme secondaryText];
@@ -1270,7 +1196,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 - (void)reasoningSliderChanged:(UISlider *)slider {
     NSInteger level = (NSInteger)lrintf(slider.value);
     [AppSettings setReasoningLevel:(AIReasoningLevel)level];
-    NSArray *names = @[@"Thấp", @"Trung bình", @"Cao", @"Siêu cao", @"MAX ×8"];
+    NSArray *names = @[@"Thấp", @"Trung bình", @"Cao", @"Siêu cao", @"Tối đa"];
     self.reasoningValueLabel.text = names[(NSUInteger)level];
     [self updateToolButtons];
     [self pushStrings];
@@ -1313,7 +1239,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
 - (void)mentionTapped {
     [self.view endEditing:YES];
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"@ Công cụ" message:@"Chọn tác vụ hoặc tích hợp" preferredStyle:UIAlertControllerStyleActionSheet];
+    ChoicePopupViewController *sheet = [ChoicePopupViewController popupWithTitle:@"@ Công cụ" message:@"Chọn tác vụ hoặc tích hợp"];
     __weak typeof(self) weakSelf = self;
     NSArray *recent = self.conversation[@"messages"];
     NSString *lastReply = nil;
@@ -1321,35 +1247,33 @@ static const CGFloat kDrawerWidthRatio = 0.62;
         NSDictionary *message = recent[(NSUInteger)i];
         if (![message[@"role"] isEqualToString:@"user"] && [message[@"text"] isKindOfClass:[NSString class]] && [message[@"text"] length] > 0) { lastReply = message[@"text"]; break; }
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Tạo tệp TXT" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    [sheet addAction:[ChoiceAction actionWithTitle:@"Tạo tệp TXT" style:UIAlertActionStyleDefault handler:^(id a) {
         NSString *source = lastReply.length > 0 ? lastReply : [weakSelf trimmedInput];
         if (source.length > 0) [weakSelf exportText:source asWord:NO];
         else [weakSelf showAlertMessage:@"Hãy nhập nội dung hoặc tạo câu trả lời trước khi xuất tệp TXT."];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Tạo tệp DOCX" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    [sheet addAction:[ChoiceAction actionWithTitle:@"Tạo tệp DOCX" style:UIAlertActionStyleDefault handler:^(id a) {
         NSString *source = lastReply.length > 0 ? lastReply : [weakSelf trimmedInput];
         if (source.length > 0) [weakSelf exportText:source asWord:YES];
         else [weakSelf showAlertMessage:@"Hãy nhập nội dung hoặc tạo câu trả lời trước khi xuất tệp DOCX."];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Chọn tệp để đính kèm…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    [sheet addAction:[ChoiceAction actionWithTitle:@"Chọn tệp để đính kèm…" style:UIAlertActionStyleDefault handler:^(id a) {
         [weakSelf attachTapped];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"/tạo ảnh" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+    [sheet addAction:[ChoiceAction actionWithTitle:@"/tạo ảnh" style:UIAlertActionStyleDefault handler:^(id a) {
         weakSelf.textView.text = @"/tạo ảnh ";
         [weakSelf textViewDidChange:weakSelf.textView];
         [weakSelf.textView becomeFirstResponder];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:[AppSettings webSearchEnabled] ? @"Tắt tìm kiếm web" : @"Bật tìm kiếm web" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { [weakSelf searchTapped]; }]];
+    [sheet addAction:[ChoiceAction actionWithTitle:[AppSettings webSearchEnabled] ? @"Tắt tìm kiếm web" : @"Bật tìm kiếm web" style:UIAlertActionStyleDefault handler:^(id a) { [weakSelf searchTapped]; }]];
     NSArray *external = @[@"Gmail", @"Google Calendar", @"Google Docs", @"Google Drive", @"Google Home", @"Google Keep", @"Google Photos", @"Google Sheets", @"Google Tasks"];
     for (NSString *name in external) {
-        [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        [sheet addAction:[ChoiceAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(id a) {
             [weakSelf showAlertMessage:[NSString stringWithFormat:@"%@ cần kết nối OAuth/API riêng. Phiên bản này chưa có thông tin xác thực để truy cập tài khoản.", name]];
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.mentionButton;
-    sheet.popoverPresentationController.sourceRect = self.mentionButton.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    [sheet addAction:[ChoiceAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [sheet presentFromViewController:self];
 }
 
 - (void)updateDailyTokenPrompt {
@@ -1388,6 +1312,8 @@ static const CGFloat kDrawerWidthRatio = 0.62;
                         options:(curve << 16) | UIViewAnimationOptionBeginFromCurrentState
                      animations:^{
         [self.view layoutIfNeeded];
+        // The page got shorter (keyboard up) or taller (keyboard down). Move the scroll position by the same amount so the
+        // messages stay where they are relative to the input bar, instead of jumping to the end of the chat.
         if (!wasEmpty && !self.chatIsEmpty) {
             CGFloat newHeight = self.webView.bounds.size.height;
             CGFloat maxOffset = MAX(0, sv.contentSize.height - newHeight);
@@ -1404,11 +1330,11 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)showAlertMessage:(NSString *)message title:(NSString *)title {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    ChoicePopupViewController *alert = [ChoicePopupViewController alertWithTitle:title message:message];
+    [alert addAction:[ChoiceAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     UIViewController *top = self;
     while (top.presentedViewController) top = top.presentedViewController;
-    [top presentViewController:alert animated:YES completion:nil];
+    [alert presentFromViewController:top];
 }
 
 #pragma mark - Web page
@@ -1423,12 +1349,22 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 - (NSString *)scaleCSSRuleForScale:(CGFloat)scale {
     CGFloat clamped = MIN(1.4, MAX(0.7, scale));
     CGFloat bubbleMaxW = MIN(96.0, MAX(60.0, 80.0 * clamped));
-    return [NSString stringWithFormat:
+    NSInteger step = [AppSettings fontWeightStep];
+    NSString *weightRule = step == 0 ? @"" : [NSString stringWithFormat:
+            @"body,.bubble,.btext,.markdown,p,li,td{font-weight:%ld;}strong,b,h1,h2,h3,h4,h5,h6,th{font-weight:%ld;}",
+            (long)CMWebFontWeight(), (long)MIN(900, CMWebFontWeight() + 300)];
+    return [weightRule stringByAppendingFormat:
             @":root{--uiscale:%.3f;}"
              "html{font-size:calc(16px * var(--uiscale)) !important;}"
              "body,#chat,.chat,.messages,#messages,.msg,.msg-row,.msg-wrap,.msg-text,.msg-content,.markdown,.markdown-body,pre,code,table,blockquote,p,li{font-size:calc(16px * var(--uiscale)) !important;line-height:1.45 !important;}"
              ".msg,.bubble,.message,.msg-bubble{max-width:%.1f%% !important;padding:calc(10px * var(--uiscale)) calc(14px * var(--uiscale)) !important;border-radius:calc(14px * var(--uiscale)) !important;}",
             clamped, bubbleMaxW];
+}
+
+- (NSString *)scaleCSSRuleForScaleMaterialAware:(CGFloat)scale {
+    NSString *rule = [self scaleCSSRuleForScale:scale];
+    if ([Theme materialDesign]) rule = [rule stringByReplacingOccurrencesOfString:@"border-radius:calc(14px" withString:@"border-radius:calc(22px"];
+    return rule;
 }
 
 - (void)loadWebPage {
@@ -1446,8 +1382,9 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     css = [css stringByReplacingOccurrencesOfString:@"{{LOGO}}" withString:logoURI];
 
     CGFloat scale = [AppSettings uiScale];
-    css = [css stringByAppendingFormat:@"\n:root{--serif:%@;}", [self serifCSSValue]];
-    css = [css stringByAppendingFormat:@"\n%@", [self scaleCSSRuleForScale:scale]];
+    css = [css stringByAppendingFormat:@"\n:root{--serif:%@;--ui-font:%@;}", [self serifCSSValue], CMWebFontStack()];
+    css = [css stringByAppendingFormat:@"\n%@", CMRoundedFontFaceCSS()];
+    css = [css stringByAppendingFormat:@"\n%@", [self scaleCSSRuleForScaleMaterialAware:scale]];
     html = [html stringByReplacingOccurrencesOfString:@"{{CSS}}" withString:css];
     html = [html stringByReplacingOccurrencesOfString:@"{{JS}}" withString:js];
     [self.webView loadHTMLString:html baseURL:nil];
@@ -1458,7 +1395,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     NSData *data = nil;
     @try {
         data = [NSJSONSerialization dataWithJSONObject:args options:0 error:nil];
-    } @catch (NSException *exception) {
+    } @catch (NSException *exception) {   // dataWithJSONObject: throws (not returns an error) on invalid values
         [DiagnosticLog log:@"callJS %@ skipped: %@", function, exception.reason];
         return;
     }
@@ -1476,8 +1413,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     if (self.deltaFlushTimer) return;
     self.pendingJSDelta = [NSMutableString string];
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    // Tăng lên 50ms để giảm tải cho Main Thread, vẫn đủ mượt
-    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC), 50 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 32 * NSEC_PER_MSEC), 32 * NSEC_PER_MSEC, 8 * NSEC_PER_MSEC);
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(timer, ^{
         [weakSelf flushPendingJSDelta];
@@ -1490,35 +1426,11 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     if (self.pendingJSDelta.length == 0) return;
     NSString *chunk = [self.pendingJSDelta copy];
     [self.pendingJSDelta setString:@""];
-
-    // Đẩy việc xử lý chuỗi sang Background Queue để không làm nghẽn Main Thread
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(self.jsSerializationQueue, ^{
-        NSData *data = nil;
-        @try {
-            data = [NSJSONSerialization dataWithJSONObject:@[chunk] options:0 error:nil];
-        } @catch (NSException *exception) {
-            [DiagnosticLog log:@"flushPendingJSDelta skipped: %@", exception.reason];
-            return;
-        }
-        if (!data) return;
-        
-        NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-        json = [json stringByReplacingOccurrencesOfString:@"\u2028" withString:@"\\u2028"];
-        json = [json stringByReplacingOccurrencesOfString:@"\u2029" withString:@"\\u2029"];
-        NSString *script = [NSString stringWithFormat:@"ChatUI.delta.apply(null,%@);", json];
-
-        // Quay lại Main Thread để thực thi JS trên WebView
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ChatViewController *strongSelf = weakSelf;
-            if (strongSelf && strongSelf.webReady) {
-                [strongSelf.webView evaluateJavaScript:script completionHandler:nil];
-            }
-        });
-    });
+    [self callJS:@"delta" args:@[chunk]];
 }
 
 - (void)stopDeltaFlushTimer {
+    [self stopThinkingTimer];
     [self flushPendingJSDelta];
     if (self.deltaFlushTimer) {
         dispatch_source_cancel(self.deltaFlushTimer);
@@ -1555,6 +1467,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
         self.historySettingsChevron.tintColor = [Theme secondaryText];
         self.historyUpdateDot.backgroundColor = [Theme accent];
         self.historyUpdateDot.layer.borderColor = [Theme background].CGColor;
+        if (self.historyDrawerOpen) self.chatBlurView.effect = [self chatBlurEffect];
         [self.historyTableView reloadData];
     }
 
@@ -1562,6 +1475,9 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.wallpaperView.image = wallpaper;
     self.wallpaperView.hidden = (wallpaper == nil);
     self.dimView.backgroundColor = [UIColor colorWithWhite:0 alpha:[Theme wallpaperDimAlpha]];
+    BOOL movingGradient = [Theme gradientWallpaperActive];
+    self.gradientView.hidden = !movingGradient;
+    if (movingGradient) [self.gradientView refreshColors];
     self.webView.scrollView.indicatorStyle = [Theme darkMode] ? UIScrollViewIndicatorStyleWhite : UIScrollViewIndicatorStyleDefault;
 
     [self.modelButton setTitleColor:[Theme text] forState:UIControlStateNormal];
@@ -1570,6 +1486,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self.inputBar viewWithTag:1001].backgroundColor = [Theme border];
     self.inputBox.backgroundColor = [Theme surface];
     self.inputBox.layer.borderColor = [Theme border].CGColor;
+    self.inputBox.layer.cornerRadius = MIN(MR(22, 28), MAX(1, self.inputBox.bounds.size.height / 2.0));   // Material 3 shape; changes at once with the design switch
     self.attachButton.tintColor = [Theme secondaryText];
     self.textView.textColor = [Theme text];
     self.textView.tintColor = [Theme accent];
@@ -1587,7 +1504,8 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     if (self.pendingAttachments.count > 0 || self.importsInFlight > 0) [self refreshAttachStrip];
 
     [self setNeedsStatusBarAppearanceUpdate];
-    [self pushThemeToWeb];
+     [self pushThemeToWeb];
+     [self applyUIScaleToNativeAndWeb];   // design (Material radii) and font follow the theme at once
     [self.view setNeedsLayout];
 }
 
@@ -1653,7 +1571,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
                                           @"edit": L(@"edit"),
                                           @"save": L(@"save_reply"),
                                           @"share": L(@"share_image"),
-                                          @"thinking": ([AppSettings reasoningLevel] >= AIReasoningLevelHigh) ? @"Đang suy luận sâu…" : @"Đang xử lý siêu tốc…" }]];
+                                          @"thinking": ([AppSettings reasoningLevel] >= AIReasoningLevelHigh) ? @"Đang suy luận sâu…" : @"Đang xử lý…" }]];
 }
 
 - (NSArray *)webAttachmentsFrom:(NSArray *)attachments conversation:(NSString *)cid {
@@ -1690,22 +1608,10 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self unlockWebViewScrolling];
 }
 
-// iOS can kill the web view's process while a long reply streams in (memory). The page is then rebuilt, and without this
-// the reply that is still being generated would no longer be shown (the chat looks frozen). Show it again from what has
-// been received so far; the rest keeps streaming in as usual.
-- (void)restoreStreamingUIIfNeeded {
-    if (!self.streaming) return;
-    NSMutableString *soFar = [NSMutableString string];
-    if (self.longReplyAccumulator.length > 0) [soFar appendString:self.longReplyAccumulator];
-    if (self.streamBuffer.length > 0) [soFar appendString:self.streamBuffer];
-    [self.pendingJSDelta setString:@""];   // anything still pending is already inside soFar
-    [self callJS:@"begin" args:@[]];
-    if (soFar.length > 0) [self callJS:@"delta" args:@[soFar]];
-    [DiagnosticLog log:@"chat page rebuilt during a reply: restored %lu chars", (unsigned long)soFar.length];
-}
-
+// The page stays invisible until it has drawn once, so the greeting fades in instead of popping in half-built.
 - (void)revealWebView {
     if (self.webView.alpha >= 1.0) return;
+    if ([Material active]) { [Material animateEffects:MaterialMotionSlow animations:^{ self.webView.alpha = 1.0; } completion:nil]; return; }
     [UIView animateWithDuration:0.22 delay:0 options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction animations:^{
         self.webView.alpha = 1.0;
     } completion:nil];
@@ -1723,7 +1629,15 @@ static const CGFloat kDrawerWidthRatio = 0.62;
         [self applyUIScaleToNativeAndWeb];
         [self pushStrings];
         [self renderConversation];
-        [self restoreStreamingUIIfNeeded];
+        if (self.streaming) {
+            // iOS restarted the page while a reply was being written: draw the text received so far and carry on.
+            [self callJS:@"begin" args:@[]];
+            NSString *soFar = self.longReplyAccumulator.length > 0
+                ? [self.longReplyAccumulator stringByAppendingString:(self.streamBuffer ?: @"")]
+                : (self.streamBuffer ?: @"");
+            [self.pendingJSDelta setString:@""];   // already part of soFar
+            if (soFar.length > 0) [self callJS:@"delta" args:@[soFar]];
+        }
         [self updateSendButton];
         [self unlockWebViewScrolling];
     } else if ([type isEqualToString:@"empty"]) {
@@ -1741,6 +1655,8 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     } else if ([type isEqualToString:@"save"]) {
         NSString *text = body[@"text"];
         if ([text isKindOfClass:[NSString class]] && text.length > 0) [self offerExportForText:text];
+    } else if ([type isEqualToString:@"file"]) {
+        [self shareFileForAttachmentId:body[@"id"]];
     } else if ([type isEqualToString:@"image"]) {
         [self showImageForAttachmentId:body[@"id"]];
     } else if ([type isEqualToString:@"shareImage"]) {
@@ -1769,20 +1685,16 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)offerExportForText:(NSString *)text {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:L(@"export_file")
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    ChoicePopupViewController *sheet = [ChoicePopupViewController popupWithTitle:L(@"export_file") message:nil];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:L(@"export_txt") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [sheet addAction:[ChoiceAction actionWithTitle:L(@"export_txt") style:UIAlertActionStyleDefault handler:^(id action) {
         [weakSelf exportText:text asWord:NO];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:L(@"export_docx") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+    [sheet addAction:[ChoiceAction actionWithTitle:L(@"export_docx") style:UIAlertActionStyleDefault handler:^(id action) {
         [weakSelf exportText:text asWord:YES];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.view;
-    sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMaxY(self.view.bounds) - 80, 1, 1);
-    [self presentViewController:sheet animated:YES completion:nil];
+    [sheet addAction:[ChoiceAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [sheet presentFromViewController:self];
 }
 
 - (void)exportText:(NSString *)text asWord:(BOOL)asWord {
@@ -1845,7 +1757,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
-    [DiagnosticLog log:@"web content process was terminated by iOS: reloading the page"];
+    [DiagnosticLog log:@"web content process was terminated by iOS (probably memory): reloading the page"];
     self.shownGreeting = nil;
     [self loadWebPage];
 }
@@ -1940,6 +1852,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [ModelStore setSelectedModelId:modelId];
     self.conversation[@"model"] = modelId;
     if ([self.conversation[@"messages"] count] > 0) [ConversationStore saveConversation:self.conversation];
+    [self refreshPinnedSidebar];
     [self updateModelTitle];
     [self updateToolButtons];
 }
@@ -1977,9 +1890,9 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 - (void)newChatTapped {
     [self.view endEditing:YES];
     [self closeHistoryDrawer];
-    if ([self topPresentedController] != self) return;
+    if ([self topPresentedController] != self) return;   // a pop-up is already on screen
     BOOL hasContent = [self.conversation[@"messages"] count] > 0 || self.pendingAttachments.count > 0;
-    if (!hasContent) {
+    if (!hasContent) {   // already a fresh chat: nothing to confirm
         [self startNewChat];
         return;
     }
@@ -2015,14 +1928,17 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.conversation = [ConversationStore newConversationWithModel:self.model];
     [self rerollGreeting];
     [self pushStrings];
-    [self resetWebScrollToTop];
+    [self resetWebScrollToTop];   // while the old (tall) chat is still there, so no stale offset survives the page shrinking
     self.chatIsEmpty = YES;
     [self callJS:@"clear" args:@[]];
     [self updateSendButton];
     [self unlockWebViewScrolling];
     [self reassertEmptyLockSoon];
+    [self refreshPinnedSidebar];
 }
 
+// The page scroll position is native state too (UIScrollView). If it is left at, say, 3000 pt when the page becomes one
+// screen tall, the greeting is drawn half cut off until the user pulls the page. Always bring it back to 0 explicitly.
 - (void)resetWebScrollToTop {
     UIScrollView *sv = self.webView.scrollView;
     if (sv.contentOffset.y != 0 || sv.contentOffset.x != 0) [sv setContentOffset:CGPointZero animated:NO];
@@ -2056,6 +1972,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self renderConversation];
     [self updateSendButton];
     [self unlockWebViewScrolling];
+    [self refreshPinnedSidebar];
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         [self unlockWebViewScrolling];
     });
@@ -2064,6 +1981,11 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 #pragma mark - Input
 
 - (void)textViewDidChange:(UITextView *)textView {
+    if (self.voiceRecording && !self.applyingDictation) {
+        // The user started typing while dictating: stop listening and keep their own text.
+        self.dictationUserEdited = YES;
+        [self.voiceManager cancelDictation];
+    }
     self.placeholderLabel.hidden = textView.text.length > 0;
     [self updateSendButton];
     [self relayoutAnimated];
@@ -2074,8 +1996,12 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)micTapped {
-    if (self.streaming || self.voiceRecording) return;
-    [self showVoiceSelectionPopup];
+    if (self.voiceRecording) {
+        [self.voiceManager finishDictation];   // keep the last words; the final text arrives in a moment
+        return;
+    }
+    if (self.streaming) return;
+    [self startDictation];
 }
 
 - (void)updateSendButton {
@@ -2084,35 +2010,28 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     if (self.streaming) {
         [self.sendButton setImage:[Theme iconStop] forState:UIControlStateNormal];
         self.sendButton.backgroundColor = [Theme accent];
-    } else if (self.voiceRecording) {
-        [self.sendButton setImage:[Theme iconStop] forState:UIControlStateNormal];
-        self.sendButton.backgroundColor = [UIColor colorWithRed:0.85 green:0.20 blue:0.20 alpha:1.0];
     } else {
         [self.sendButton setImage:[Theme iconSend] forState:UIControlStateNormal];
         self.sendButton.backgroundColor = canSend ? [Theme accent] : [Theme accentDisabled];
     }
-    self.sendButton.enabled = self.streaming || self.voiceRecording || canSend;
-    BOOL micAvailable = !self.streaming && !self.voiceRecording;
+    self.sendButton.enabled = self.streaming || canSend;
+    BOOL micAvailable = !self.streaming || self.voiceRecording;
     self.micButton.enabled = micAvailable;
-    self.micButton.alpha = micAvailable ? 1.0 : 0.4;
-    self.micButton.tintColor = [Theme text];
+    if (!self.voiceRecording) self.micButton.alpha = micAvailable ? 1.0 : 0.4;
+    self.micButton.tintColor = self.voiceRecording ? [UIColor colorWithRed:0.90 green:0.22 blue:0.22 alpha:1.0] : [Theme text];
     self.attachButton.enabled = !self.streaming;
     self.attachButton.alpha = self.streaming ? 0.4 : 1.0;
-    if (self.lastWasStreaming && !self.streaming) {
-        if (self.activeFullScreenVoice) {
-            [self speakLastAssistantMessage];
-        }
-    }
-    self.lastWasStreaming = self.streaming;
 }
 
 - (NSString *)serifCSSValue {
-    return [AppSettings fontStyle] == 1 ? @"-apple-system, \"Helvetica Neue\", Helvetica, sans-serif" : @"Georgia, \"Times New Roman\", serif";
+    return [AppSettings fontStyle] == 0 ? @"Georgia, \"Times New Roman\", serif" : CMWebFontStack();
 }
 
 - (void)applyUIScaleToNativeAndWeb {
+    // Called on every appearance of the chat: do the work only when the size or the font really changed,
+    // otherwise returning from Settings would restyle the page (and flash the greeting) for nothing.
     CGFloat sc = [AppSettings uiScale];
-    NSString *sig = [NSString stringWithFormat:@"%.3f|%ld", sc, (long)[AppSettings fontStyle]];
+    NSString *sig = [NSString stringWithFormat:@"%.3f|%ld|%ld|%d", sc, (long)[AppSettings fontStyle], (long)[AppSettings fontWeightStep], [Theme materialDesign] ? 1 : 0];
     if (![sig isEqualToString:self.appliedNativeScaleSig]) {
         self.appliedNativeScaleSig = sig;
         self.textView.font = [UIFont systemFontOfSize:17.0 * sc];
@@ -2123,17 +2042,18 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     if (!self.webReady || !self.webView) return;
     if ([sig isEqualToString:self.appliedWebScaleSig]) return;
     self.appliedWebScaleSig = sig;
-    NSData *fontData = [NSJSONSerialization dataWithJSONObject:@[[self serifCSSValue]] options:0 error:nil];
+    NSData *fontData = [NSJSONSerialization dataWithJSONObject:@[[self serifCSSValue], CMWebFontStack()] options:0 error:nil];
     NSString *fontJSON = fontData ? [[NSString alloc] initWithData:fontData encoding:NSUTF8StringEncoding] : @"[\"Georgia, serif\"]";
-    NSData *cssData = [NSJSONSerialization dataWithJSONObject:@[[self scaleCSSRuleForScale:sc]] options:0 error:nil];
+    NSData *cssData = [NSJSONSerialization dataWithJSONObject:@[[self scaleCSSRuleForScaleMaterialAware:sc]] options:0 error:nil];
     NSString *cssJSON = cssData ? [[NSString alloc] initWithData:cssData encoding:NSUTF8StringEncoding] : @"[\"\"]";
     NSString *script = [NSString stringWithFormat:
                         @"(function(){"
                          "document.documentElement.style.setProperty('--serif',(%@)[0]);"
+                         "document.documentElement.style.setProperty('--ui-font',(%@)[1]);"
                          "var el=document.getElementById('uiscale_live_css');"
                          "if(!el){el=document.createElement('style');el.id='uiscale_live_css';document.head.appendChild(el);}"
                          "el.textContent=(%@)[0];"
-                         "})();", fontJSON, cssJSON];
+                         "})();", fontJSON, fontJSON, cssJSON];
     [self.webView evaluateJavaScript:script completionHandler:nil];
 }
 
@@ -2142,168 +2062,72 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self applyUIScaleToNativeAndWeb];
 }
 
-#pragma mark - Voice chat & Voice Selection Popup
+#pragma mark - Dictation (mic: speech to text, the user presses send)
 
-- (void)showVoiceSelectionPopup {
-    if ([self.view viewWithTag:9988]) return;
-
-    CGFloat screenW = CGRectGetWidth(self.view.bounds);
-
-    UIView *overlay = [[UIView alloc] initWithFrame:self.view.bounds];
-    overlay.tag = 9988;
-    overlay.backgroundColor = [UIColor clearColor];
-
-    UIButton *dismissBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    dismissBtn.frame = overlay.bounds;
-    [dismissBtn addTarget:self action:@selector(dismissVoicePopup) forControlEvents:UIControlEventTouchUpInside];
-    [overlay addSubview:dismissBtn];
-
-    CGFloat menuW = 230;
-    CGFloat menuH = 170;
-    CGFloat bottomBarY = CGRectGetMinY(self.inputBar.frame);
-    CGFloat startX = screenW - 12 - 36 - menuW;
-    CGFloat startY = bottomBarY - menuH - 8;
-
-    UIView *menuCard = [[UIView alloc] initWithFrame:CGRectMake(screenW - 12 - 36, startY + menuH/2, 0, 0)];
-    menuCard.tag = 9989;
-    menuCard.backgroundColor = [Theme surface];
-    menuCard.layer.cornerRadius = 16;
-    menuCard.layer.borderWidth = 1;
-    menuCard.layer.borderColor = [Theme border].CGColor;
-    menuCard.clipsToBounds = YES;
-    menuCard.layer.shadowColor = [UIColor blackColor].CGColor;
-    menuCard.layer.shadowOpacity = 0.25;
-    menuCard.layer.shadowRadius = 12;
-    menuCard.layer.shadowOffset = CGSizeMake(-4, 4);
-    [overlay addSubview:menuCard];
-
-    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, menuW - 32, 24)];
-    titleLbl.text = @"Chọn giọng nói AI";
-    titleLbl.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
-    titleLbl.textColor = [Theme text];
-    [menuCard addSubview:titleLbl];
-
-    NSArray *voices = @[@"1. Giọng nữ tự nhiên", @"2. Giọng nam trầm ấm", @"3. Giọng biểu cảm"];
-    CGFloat rowY = 42;
-    for (NSInteger i = 0; i < voices.count; i++) {
-        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-        btn.frame = CGRectMake(12, rowY, menuW - 24, 36);
-        btn.backgroundColor = [Theme background];
-        btn.layer.cornerRadius = 8;
-        [btn setTitle:voices[i] forState:UIControlStateNormal];
-        [btn setTitleColor:[Theme text] forState:UIControlStateNormal];
-        btn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-        btn.tag = 100 + i;
-        [btn addTarget:self action:@selector(voiceOptionSelected:) forControlEvents:UIControlEventTouchUpInside];
-        [menuCard addSubview:btn];
-        rowY += 40;
+- (void)setDictationActive:(BOOL)active {
+    self.voiceRecording = active;
+    self.micButton.tintColor = active ? [UIColor colorWithRed:0.90 green:0.22 blue:0.22 alpha:1.0] : [Theme text];
+    self.micButton.accessibilityLabel = active ? @"Stop" : @"Mic";
+    [self.micButton.layer removeAnimationForKey:@"dictationPulse"];
+    if (active) {
+        CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        pulse.fromValue = @1.0;
+        pulse.toValue = @0.35;
+        pulse.duration = 0.7;
+        pulse.autoreverses = YES;
+        pulse.repeatCount = HUGE_VALF;
+        [self.micButton.layer addAnimation:pulse forKey:@"dictationPulse"];
     }
-
-    [self.view addSubview:overlay];
-
-    [UIView animateWithDuration:0.28 delay:0 usingSpringWithDamping:0.75 initialSpringVelocity:0.6 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        menuCard.frame = CGRectMake(startX, startY, menuW, menuH);
-    } completion:nil];
 }
 
-- (void)dismissVoicePopup {
-    UIView *overlay = [self.view viewWithTag:9988];
-    if (!overlay) return;
-    UIView *menuCard = [overlay viewWithTag:9989];
-    [UIView animateWithDuration:0.20 animations:^{
-        menuCard.alpha = 0;
-        menuCard.transform = CGAffineTransformMakeScale(0.7, 0.7);
-        overlay.alpha = 0;
-    } completion:^(BOOL finished) {
-        [overlay removeFromSuperview];
+// Writes the spoken text after what was already typed.
+- (void)applyDictatedText:(NSString *)spoken {
+    NSString *base = self.dictationBase ?: @"";
+    NSString *joined = base;
+    if (spoken.length > 0) {
+        BOOL needsSpace = base.length > 0 && ![[NSCharacterSet whitespaceAndNewlineCharacterSet] characterIsMember:[base characterAtIndex:base.length - 1]];
+        joined = [NSString stringWithFormat:@"%@%@%@", base, needsSpace ? @" " : @"", spoken];
+    }
+    self.applyingDictation = YES;
+    self.textView.text = joined;
+    [self textViewDidChange:self.textView];
+    self.applyingDictation = NO;
+    UITextRange *end = [self.textView textRangeFromPosition:self.textView.endOfDocument toPosition:self.textView.endOfDocument];
+    if (end) self.textView.selectedTextRange = end;
+}
+
+- (void)startDictation {
+    if (!self.voiceManager) self.voiceManager = [VoiceChatManager shared];
+    __weak typeof(self) weakSelf = self;
+    [self.voiceManager requestAuthorization:^(BOOL granted) {
+        ChatViewController *me = weakSelf;
+        if (!me || me.voiceRecording || me.streaming) return;
+        if (!granted) { [me showAlertMessage:L(@"voice_denied")]; return; }
+        me.dictationBase = me.textView.text ?: @"";
+        me.dictationUserEdited = NO;
+        [me setDictationActive:YES];
+        [me.voiceManager startDictationWithPartial:^(NSString *text) {
+            ChatViewController *self2 = weakSelf;
+            if (!self2 || !self2.voiceRecording || self2.dictationUserEdited) return;
+            [self2 applyDictatedText:text];
+        } final:^(NSString *text) {
+            ChatViewController *self2 = weakSelf;
+            if (!self2) return;
+            if (!self2.dictationUserEdited && text.length > 0) [self2 applyDictatedText:text];
+            self2.dictationBase = nil;
+            [self2 setDictationActive:NO];
+            [self2 updateSendButton];
+        } issue:^(VoiceDictationIssue issue) {
+            ChatViewController *self2 = weakSelf;
+            if (!self2) return;
+            switch (issue) {
+                case VoiceDictationIssueDenied:      [self2 showAlertMessage:L(@"voice_denied")]; break;
+                case VoiceDictationIssueUnavailable: [self2 showAlertMessage:L(@"voice_unavailable")]; break;
+                case VoiceDictationIssueNoSpeech:    [self2 showAlertMessage:L(@"voice_no_speech")]; break;
+                default:                             [self2 showAlertMessage:L(@"voice_failed")]; break;
+            }
+        }];
     }];
-}
-
-- (void)voiceOptionSelected:(UIButton *)sender {
-    NSInteger voiceIndex = sender.tag - 100;
-    [self dismissVoicePopup];
-    [self presentFullScreenVoiceChatWithVoiceIndex:voiceIndex];
-}
-
-- (void)presentFullScreenVoiceChatWithVoiceIndex:(NSInteger)voiceIndex {
-    VoiceChatFullScreenViewController *vc = [[VoiceChatFullScreenViewController alloc] init];
-    vc.modalPresentationStyle = UIModalPresentationFullScreen;
-    vc.selectedVoiceIndex = voiceIndex;
-    vc.chatController = self;
-    [self presentViewController:vc animated:YES completion:nil];
-}
-
-- (void)speakLastAssistantMessage {
-    NSArray *msgs = self.conversation[@"messages"];
-    if (![msgs isKindOfClass:[NSArray class]]) return;
-    for (NSInteger i = (NSInteger)msgs.count - 1; i >= 0; i--) {
-        id m = msgs[(NSUInteger)i];
-        if (![m isKindOfClass:[NSDictionary class]]) continue;
-        NSDictionary *msgDict = (NSDictionary *)m;
-        NSString *role = msgDict[@"role"];
-        if ([role isEqualToString:@"model"] || [role isEqualToString:@"assistant"]) {
-            NSString *text = [msgDict[@"text"] isKindOfClass:[NSString class]] ? msgDict[@"text"] : nil;
-            if (text.length == 0) {
-                id content = msgDict[@"content"];
-                if ([content isKindOfClass:[NSString class]]) text = content;
-                else if ([content isKindOfClass:[NSArray class]]) text = [(NSArray *)content componentsJoinedByString:@" "];
-            }
-            if (text.length > 0) {
-                if (!self.voiceManager) self.voiceManager = [VoiceChatManager shared];
-                [self.voiceManager stopRecording];
-
-                NSError *err = nil;
-                AVAudioSession *session = [AVAudioSession sharedInstance];
-                [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                          withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth
-                                error:&err];
-                [session setMode:AVAudioSessionModeDefault error:&err];
-                [session setActive:YES withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&err];
-
-                VoiceChatFullScreenViewController *voiceVC = [self.presentedViewController isKindOfClass:[VoiceChatFullScreenViewController class]]
-                    ? (VoiceChatFullScreenViewController *)self.presentedViewController : nil;
-                [voiceVC onAssistantStartedSpeaking:text];
-
-                NSString *spoken = text.length > 2500 ? [text substringToIndex:2500] : text;
-                SEL speakWithStyleSel = NSSelectorFromString(@"speak:voiceIndex:completion:");
-                SEL speakWithCompletionSel = NSSelectorFromString(@"speak:completion:");
-                if ([self.voiceManager respondsToSelector:speakWithStyleSel]) {
-                    NSMethodSignature *sig = [self.voiceManager methodSignatureForSelector:speakWithStyleSel];
-                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                    [inv setTarget:self.voiceManager];
-                    [inv setSelector:speakWithStyleSel];
-                    NSInteger style = self.activeVoiceStyleIndex;
-                    void (^done)(void) = ^{
-                        [voiceVC onAssistantFinishedSpeaking];
-                    };
-                    [inv setArgument:&spoken atIndex:2];
-                    [inv setArgument:&style atIndex:3];
-                    [inv setArgument:&done atIndex:4];
-                    [inv invoke];
-                } else if ([self.voiceManager respondsToSelector:speakWithCompletionSel]) {
-                    NSMethodSignature *sig = [self.voiceManager methodSignatureForSelector:speakWithCompletionSel];
-                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                    [inv setTarget:self.voiceManager];
-                    [inv setSelector:speakWithCompletionSel];
-                    void (^done)(void) = ^{
-                        [voiceVC onAssistantFinishedSpeaking];
-                    };
-                    [inv setArgument:&spoken atIndex:2];
-                    [inv setArgument:&done atIndex:3];
-                    [inv invoke];
-                } else {
-                    [self.voiceManager speak:spoken];
-                    if (voiceVC) {
-                        NSTimeInterval approxDuration = MAX(2.0, MIN(30.0, (double)spoken.length * 0.065));
-                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(approxDuration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                            [voiceVC onAssistantFinishedSpeaking];
-                        });
-                    }
-                }
-            }
-            return;
-        }
-    }
 }
 
 #pragma mark - Attachments
@@ -2425,15 +2249,18 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
 - (void)dismissToolMenu {
     if (!self.toolMenuOverlay) return;
-    [UIView animateWithDuration:0.16 animations:^{
-        self.toolMenuCard.alpha = 0.0;
-        self.toolMenuCard.transform = CGAffineTransformMakeTranslation(0, 12);
-        self.toolMenuOverlay.backgroundColor = [UIColor colorWithWhite:0 alpha:0.0];
-    } completion:^(BOOL finished) {
-        [self.toolMenuOverlay removeFromSuperview];
-        self.toolMenuOverlay = nil;
-        self.toolMenuCard = nil;
-    }];
+    UIView *overlay = self.toolMenuOverlay;
+    UIView *card = self.toolMenuCard;
+    self.toolMenuOverlay = nil;   // a second tap while it leaves must not start a second dismissal
+    self.toolMenuCard = nil;
+    void (^leave)(void) = ^{
+        card.alpha = 0.0;
+        card.transform = [Material active] ? CGAffineTransformConcat(CGAffineTransformMakeScale(0.92, 0.92), CGAffineTransformMakeTranslation(0, 8)) : CGAffineTransformMakeTranslation(0, 12);
+        overlay.backgroundColor = [UIColor colorWithWhite:0 alpha:0.0];
+    };
+    void (^gone)(BOOL) = ^(BOOL finished) { [overlay removeFromSuperview]; };
+    if ([Material active]) [Material animateEmphasizedAccelerate:MaterialDurationShort3 animations:leave completion:gone];
+    else [UIView animateWithDuration:0.16 animations:leave completion:gone];
 }
 
 - (void)toolMenuItemTapped:(UIControl *)sender {
@@ -2490,7 +2317,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 - (void)addToolMenuRowToCard:(UIView *)card y:(CGFloat)y icon:(NSString *)icon title:(NSString *)title subtitle:(NSString *)subtitle tag:(NSInteger)tag width:(CGFloat)width {
     UIControl *row = [[UIControl alloc] initWithFrame:CGRectMake(10, y, width - 20, 46)];
     row.tag = tag;
-    row.layer.cornerRadius = 13;
+    row.layer.cornerRadius = MR(13, 16);
     row.backgroundColor = [UIColor clearColor];
     [row addTarget:self action:@selector(toolMenuItemTapped:) forControlEvents:UIControlEventTouchUpInside];
 
@@ -2555,7 +2382,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
     self.toolMenuCard = [[UIView alloc] initWithFrame:CGRectMake((width - cardWidth) / 2.0, cardY, cardWidth, cardHeight)];
     self.toolMenuCard.backgroundColor = [Theme surface];
-    self.toolMenuCard.layer.cornerRadius = 22.0;
+    self.toolMenuCard.layer.cornerRadius = MR(22, 28);
     self.toolMenuCard.layer.borderWidth = 1.0;
     self.toolMenuCard.layer.borderColor = [Theme border].CGColor;
     self.toolMenuCard.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -2593,6 +2420,19 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self.toolMenuCard addSubview:cancel];
 
     [self.view addSubview:self.toolMenuOverlay];
+    UIView *menuCard = self.toolMenuCard;
+    UIView *menuOverlay = self.toolMenuOverlay;
+    if ([Material active] && ![Material reduceMotion]) {
+        // Material 3 menu: grows from 0.85 on the spatial spring while it fades in on the effects spring
+        menuCard.alpha = 0.0;
+        menuCard.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.85, 0.85), CGAffineTransformMakeTranslation(0, 12));
+        [Material animateSpatial:MaterialMotionDefault animations:^{ menuCard.transform = CGAffineTransformIdentity; } completion:nil];
+        [Material animateEffects:MaterialMotionDefault animations:^{
+            menuCard.alpha = 1.0;
+            menuOverlay.backgroundColor = [UIColor colorWithWhite:0 alpha:0.20];
+        } completion:nil];
+        return;
+    }
     self.toolMenuCard.transform = CGAffineTransformMakeTranslation(0, 12);
     self.toolMenuCard.alpha = 0.0;
     [UIView animateWithDuration:0.20 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
@@ -2760,6 +2600,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         [self.stream cancel];
         return;
     }
+    if (self.voiceRecording) {
+        // Sending while the mic is open: stop listening now and send what has been written so far.
+        [self.voiceManager cancelDictation];
+    }
     NSString *text = [self trimmedInput];
     BOOL hasAttachments = self.pendingAttachments.count > 0;
     if (text.length == 0 && !hasAttachments) return;
@@ -2822,6 +2666,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     self.conversation[@"model"] = self.model;
     self.conversation[@"updated"] = @([[NSDate date] timeIntervalSince1970]);
     [ConversationStore saveConversation:self.conversation];
+    [self refreshPinnedSidebar];
 
     [self callJS:@"addUser" args:@[text, [self webAttachmentsFrom:attachments conversation:cid], @([messages count] - 1)]];
     [self.pendingAttachments removeAllObjects];
@@ -2839,101 +2684,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     return [[firstLine substringWithRange:range] stringByAppendingString:@"…"];
 }
 
-#pragma mark - Request contents (High-speed chunked reader for huge files)
-
-- (NSString *)decodeChunkToString:(NSData *)data {
-    if (data.length == 0) return @"";
-    NSString *str = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (!str) {
-        // Cắt bớt 1-3 byte cuối nếu cắt trúng ký tự UTF-8 nhiều byte
-        NSUInteger trim = MIN((NSUInteger)3, data.length);
-        for (NSUInteger i = 1; i <= trim; i++) {
-            NSData *sub = [data subdataWithRange:NSMakeRange(0, data.length - i)];
-            str = [[NSString alloc] initWithData:sub encoding:NSUTF8StringEncoding];
-            if (str) break;
-        }
-    }
-    if (!str) {
-        str = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
-    }
-    return str ?: @"";
-}
-
-- (NSString *)readMassiveTextAtPath:(NSString *)path maxChars:(NSUInteger)maxChars {
-    if (path.length == 0 || maxChars == 0) return nil;
-    NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
-    if (!fh) return nil;
-
-    unsigned long long fileSize = [fh seekToEndOfFile];
-    if (fileSize == 0) {
-        [fh closeFile];
-        return nil;
-    }
-
-    NSUInteger targetBytes = MIN(maxChars * 3, (NSUInteger)6 * 1024 * 1024);
-    if (fileSize <= targetBytes) {
-        NSMutableString *out = [NSMutableString stringWithCapacity:(NSUInteger)fileSize];
-        [fh seekToFileOffset:0];
-        while (true) {
-            NSData *chunk = [fh readDataOfLength:kFastChunkReadBytes];
-            if (chunk.length == 0) break;
-            NSString *part = [self decodeChunkToString:chunk];
-            if (part.length > 0) [out appendString:part];
-            if (out.length >= maxChars) break;
-        }
-        [fh closeFile];
-        if (out.length > maxChars) {
-            NSRange r = [out rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, maxChars)];
-            return [out substringWithRange:r];
-        }
-        return out;
-    }
-
-    // Đọc chớp nhoáng theo từng chunk 4MB từ đầu và cuối file (hỗ trợ file từ vài MB tới hàng tỷ ký tự)
-    NSUInteger halfBytes = MIN(targetBytes / 2, kFastChunkReadBytes);
-    NSMutableString *headBuf = [NSMutableString stringWithCapacity:halfBytes];
-    [fh seekToFileOffset:0];
-    NSUInteger headRead = 0;
-    while (headRead < halfBytes) {
-        NSUInteger toRead = MIN(kFastChunkReadBytes, halfBytes - headRead);
-        NSData *chunk = [fh readDataOfLength:toRead];
-        if (chunk.length == 0) break;
-        headRead += chunk.length;
-        [headBuf appendString:[self decodeChunkToString:chunk]];
-    }
-
-    unsigned long long tailStart = fileSize > halfBytes ? (fileSize - halfBytes) : 0;
-    [fh seekToFileOffset:tailStart];
-    NSMutableString *tailBuf = [NSMutableString stringWithCapacity:halfBytes];
-    while (true) {
-        NSData *chunk = [fh readDataOfLength:kFastChunkReadBytes];
-        if (chunk.length == 0) break;
-        [tailBuf appendString:[self decodeChunkToString:chunk]];
-        if (tailBuf.length >= maxChars / 2) break;
-    }
-    [fh closeFile];
-
-    NSUInteger halfChars = MAX((NSUInteger)4096, maxChars / 2);
-    NSString *headClean = headBuf;
-    if (headClean.length > halfChars) {
-        NSRange r = [headClean rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, halfChars)];
-        headClean = [headClean substringWithRange:r];
-    }
-    NSString *tailClean = tailBuf;
-    if (tailClean.length > halfChars) {
-        NSUInteger start = tailClean.length - halfChars;
-        NSRange r = [tailClean rangeOfComposedCharacterSequencesForRange:NSMakeRange(start, halfChars)];
-        tailClean = [tailClean substringWithRange:r];
-    }
-
-    return [NSString stringWithFormat:@"%@\n\n[... ĐÃ NÉN/QUÉT NHANH %llu BYTES DỮ LIỆU ĐẦU + CUỐI ĐỂ ÉP TỐC ĐỘ XỬ LÝ TỨC THÌ ...]\n\n%@",
-            headClean, fileSize, tailClean];
-}
+#pragma mark - Request contents
 
 - (void)addPartsForAttachment:(NSDictionary *)att
                  conversation:(NSString *)cid
                     inlineIds:(NSSet *)inlineIds
-                   charBudget:(NSUInteger *)charBudget
                            to:(NSMutableArray *)parts {
     if (![att isKindOfClass:[NSDictionary class]]) return;
     NSString *kind = att[@"kind"];
@@ -2941,10 +2696,13 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     NSString *path = [AttachmentStore pathForFile:att[@"file"] conversation:cid];
 
     if ([kind isEqualToString:@"text"]) {
-        NSUInteger allowed = (charBudget && *charBudget > 2048) ? (*charBudget - 1024) : 32768;
-        NSString *content = [self readMassiveTextAtPath:path maxChars:allowed];
-        if (charBudget && content.length > 0) {
-            *charBudget = (*charBudget > content.length) ? (*charBudget - content.length) : 0;
+        NSString *content = nil;
+        if (path) {
+            NSData *mapped = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+            if (mapped.length > 0) {
+                content = [[NSString alloc] initWithData:mapped encoding:NSUTF8StringEncoding];
+                if (!content) content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+            }
         }
         NSString *text = content.length > 0
             ? [NSString stringWithFormat:@"[Attached file: %@]\n%@", name, content]
@@ -2956,7 +2714,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             NSUInteger addedFrames = 0;
             for (NSString *frameFile in frames) {
                 NSString *framePath = [AttachmentStore pathForFile:frameFile conversation:cid];
-                NSData *frameData = framePath ? [NSData dataWithContentsOfFile:framePath options:NSDataReadingMappedIfSafe error:nil] : nil;
+                NSData *frameData = framePath ? [NSData dataWithContentsOfFile:framePath] : nil;
                 if (frameData.length == 0) continue;
                 [parts addObject:@{ @"type": @"image", @"mime": @"image/jpeg",
                                     @"data": [frameData base64EncodedStringWithOptions:0] }];
@@ -2967,8 +2725,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             [parts addObject:@{ @"type": @"text", @"text": [NSString stringWithFormat:@"[Earlier video not included: %@]", name] }];
         }
     } else if ([kind isEqualToString:@"image"] || [kind isEqualToString:@"pdf"]) {
-        NSData *data = ([inlineIds containsObject:att[@"id"]] && path)
-            ? [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil] : nil;
+        NSData *data = ([inlineIds containsObject:att[@"id"]] && path) ? [NSData dataWithContentsOfFile:path] : nil;
         if (data.length > 0) {
             NSString *encoded = [data base64EncodedStringWithOptions:0];
             if ([kind isEqualToString:@"pdf"]) {
@@ -2985,24 +2742,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     }
 }
 
-- (NSUInteger)resolvedContextCharLimit {
-    NSUInteger contextLimit = MAX([AppSettings contextLimitChars], kForceMaxContextChars);
-    AIProvider provider = [Provider forModelId:self.model];
-    NSInteger inputTokenCap = [ModelStore maxInputTokensForModelId:self.model provider:provider];
-    if (inputTokenCap > 0) {
-        NSUInteger modelCharCap = (NSUInteger)inputTokenCap * 3;
-        NSUInteger reservedChars = [self effectiveSystemPrompt].length + 8192;
-        modelCharCap = modelCharCap > reservedChars ? (modelCharCap - reservedChars) : 16384;
-        contextLimit = MIN(contextLimit, modelCharCap);
-    }
-    return MAX(contextLimit, (NSUInteger)24000);
-}
-
 - (NSArray *)buildTurns {
     NSString *cid = self.conversation[@"id"];
     NSArray *messages = self.conversation[@"messages"];
-    NSUInteger contextLimit = [self resolvedContextCharLimit];
-    NSUInteger remainingTextBudget = contextLimit;
 
     NSInteger memory = [AppSettings attachmentMemory];
     NSInteger mediaMessages = 0;
@@ -3039,9 +2781,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
         NSMutableArray *parts = [NSMutableArray array];
         NSArray *atts = [message[@"attachments"] isKindOfClass:[NSArray class]] ? message[@"attachments"] : @[];
-        for (NSDictionary *att in atts) {
-            [self addPartsForAttachment:att conversation:cid inlineIds:inlineIds charBudget:&remainingTextBudget to:parts];
-        }
+        for (NSDictionary *att in atts) [self addPartsForAttachment:att conversation:cid inlineIds:inlineIds to:parts];
         if (text.length > 0) [parts addObject:@{ @"type": @"text", @"text": text }];
         if (parts.count == 0) continue;
 
@@ -3051,6 +2791,16 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         } else {
             [turns addObject:[@{ @"role": turnRole, @"parts": parts } mutableCopy]];
         }
+    }
+
+    NSUInteger contextLimit = [AppSettings contextLimitChars];
+    AIProvider provider = [Provider forModelId:self.model];
+    NSInteger inputTokenCap = [ModelStore maxInputTokensForModelId:self.model provider:provider];
+    if (inputTokenCap > 0) {
+        NSUInteger modelCharCap = (NSUInteger)inputTokenCap * 4;
+        NSUInteger reservedChars = [self effectiveSystemPrompt].length + 4096;
+        modelCharCap = modelCharCap > reservedChars ? modelCharCap - reservedChars : 16384;
+        contextLimit = MIN(contextLimit, MAX(modelCharCap, (NSUInteger)1000000));
     }
 
     while (turns.count > 1 && [self totalTextChars:turns] > contextLimit) [turns removeObjectAtIndex:0];
@@ -3115,14 +2865,193 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     self.streamBuffer = [NSMutableString string];
     self.longReplyAccumulator = [NSMutableString string];
     self.longReplyContinuationCount = 0;
+    self.earlyEndContinuations = 0;
     self.streamRetryCount = 0;
     self.didRecoverModel404 = NO;
     self.didFallbackFromFastMode = NO;
+    self.toolsDisabledForReply = NO;
     self.streaming = YES;
     [self updateSendButton];
     [self startDeltaFlushTimer];
     [self callJS:@"begin" args:@[]];
+    [self startThinkingTimer];
     [self launchRequestStreaming:YES];
+}
+
+- (void)startThinkingTimer {
+    [self stopThinkingTimer];
+    self.thinkingStart = CFAbsoluteTimeGetCurrent();
+    self.thinkingTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tickThinking) userInfo:nil repeats:YES];
+    [self tickThinking];
+}
+
+- (void)stopThinkingTimer {
+    [self.thinkingTimer invalidate];
+    self.thinkingTimer = nil;
+}
+
+- (void)tickThinking {
+    NSInteger seconds = (NSInteger)(CFAbsoluteTimeGetCurrent() - self.thinkingStart);
+    NSString *text = seconds < 60
+        ? [NSString stringWithFormat:L(@"thinking_seconds"), (long)seconds]
+        : [NSString stringWithFormat:L(@"thinking_minutes"), (long)(seconds / 60), (long)(seconds % 60)];
+    [self callJS:@"setStatus" args:@[text]];
+}
+
+- (NSString *)lastUserText {
+    NSArray *messages = self.conversation[@"messages"];
+    for (NSInteger i = (NSInteger)messages.count - 1; i >= 0; i--) {
+        NSDictionary *message = messages[(NSUInteger)i];
+        if ([message[@"role"] isEqualToString:@"user"] && [message[@"text"] isKindOfClass:[NSString class]]) {
+            return message[@"text"];
+        }
+    }
+    return @"";
+}
+
+// An image request goes to an image-capable Gemini model for that one reply. The model the person chose is kept.
+- (NSString *)modelIdForThisRequest {
+    NSString *selected = [self.model copy];
+    if ([Provider forModelId:selected] != AIProviderGemini) return selected;
+    if ([selected rangeOfString:@"image"].location != NSNotFound) return selected;
+
+    NSString *text = [[self lastUserText] lowercaseString];
+    NSArray *triggers = @[@"vẽ", @"tạo ảnh", @"tạo hình", @"làm ảnh", @"generate an image", @"generate image", @"create an image", @"draw me"];
+    BOOL wantsImage = NO;
+    for (NSString *trigger in triggers) {
+        if ([text containsString:trigger]) { wantsImage = YES; break; }
+    }
+    if (!wantsImage) return selected;
+
+    for (NSDictionary *model in [ModelStore visibleModelsForProvider:AIProviderGemini]) {
+        NSString *modelId = model[@"id"];
+        if (![modelId isKindOfClass:[NSString class]]) continue;
+        if ([modelId rangeOfString:@"image"].location != NSNotFound && [ModelStore isModelAvailableNow:modelId]) {
+            [DiagnosticLog log:@"image request: this reply uses %@", modelId];
+            return modelId;
+        }
+    }
+    return selected;
+}
+
+// True when the request needs calculation, charts or data processing: then Gemini may run Python.
+- (BOOL)wantsCodeExecution {
+    NSString *text = [[self lastUserText] lowercaseString];
+    NSArray *signals = @[@"chạy", @"tính", @"biểu đồ", @"python", @"vẽ đồ thị", @"plot", @"chart", @"calculate",
+                         @"compute", @"simulate", @"mô phỏng", @"csv", @"phân tích dữ liệu", @"thống kê"];
+    for (NSString *signal in signals) {
+        if ([text containsString:signal]) return YES;
+    }
+    return NO;
+}
+
+// Finds ```file:NAME blocks in a reply, saves each as a file attachment and returns the reply without those blocks.
+- (NSString *)extractFileBlocksFromReply:(NSString *)reply intoAttachments:(NSMutableArray *)out {
+    if (reply.length == 0) return reply;
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSMutableArray *kept = [NSMutableArray array];
+    NSString *currentName = nil;
+    NSMutableArray *body = nil;
+    for (NSString *line in [reply componentsSeparatedByString:@"\n"]) {
+        NSString *trimmed = [line stringByTrimmingCharactersInSet:ws];
+        if (!currentName && [trimmed hasPrefix:@"```file:"]) {
+            currentName = [[trimmed substringFromIndex:7] stringByTrimmingCharactersInSet:ws];
+            body = [NSMutableArray array];
+            continue;
+        }
+        if (currentName) {
+            if ([trimmed isEqualToString:@"```"]) {
+                NSDictionary *attachment = [self saveGeneratedFileNamed:currentName
+                                                                content:[body componentsJoinedByString:@"\n"]];
+                if (attachment) {
+                    [out addObject:attachment];
+                } else {
+                    [kept addObject:[NSString stringWithFormat:@"(Không tạo được tệp %@)", currentName]];
+                }
+                currentName = nil;
+                body = nil;
+            } else {
+                [body addObject:line];
+            }
+            continue;
+        }
+        [kept addObject:line];
+    }
+    if (currentName) [kept addObjectsFromArray:body];   // a block that never closed: keep its text
+    return [kept componentsJoinedByString:@"\n"];
+}
+
+- (NSDictionary *)saveGeneratedFileNamed:(NSString *)rawName content:(NSString *)content {
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSString *name = [rawName stringByTrimmingCharactersInSet:ws];
+    name = [[name componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/\\:"]]
+            componentsJoinedByString:@"-"];
+    if (name.length == 0) name = @"tep.txt";
+    if (name.length > 80) name = [name substringFromIndex:name.length - 80];
+    NSString *ext = [[name pathExtension] lowercaseString];
+    NSData *data = nil;
+    NSString *finalName = name;
+
+    if ([ext isEqualToString:@"docx"]) {
+        NSError *error = nil;
+        NSURL *url = [OfficeExport writeWordFile:content error:&error];
+        data = url ? [NSData dataWithContentsOfURL:url] : nil;
+        if (url) [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+        if (!data) [DiagnosticLog log:@"generated docx failed: %@", error.localizedDescription ?: @"unknown"];
+    } else {
+        NSSet *textExtensions = [NSSet setWithObjects:@"txt", @"md", @"csv", @"json", @"html", @"htm", @"xml", @"py",
+                                 @"js", @"swift", @"m", @"h", @"c", @"cpp", @"java", @"sql", @"sh", @"yaml", @"yml",
+                                 @"css", @"tex", @"log", nil];
+        if (![textExtensions containsObject:ext]) {
+            // .xlsx, .pptx, .pdf and other binary formats are not produced yet: keep the text as a .txt file.
+            finalName = [[name stringByDeletingPathExtension] stringByAppendingString:@".txt"];
+            [DiagnosticLog log:@"generated file %@ saved as text: format not supported yet", name];
+        }
+        data = [content dataUsingEncoding:NSUTF8StringEncoding];
+    }
+    if (data.length == 0) return nil;
+
+    NSString *errorKey = nil;
+    return [AttachmentStore importFileData:data name:finalName conversation:self.conversation[@"id"] errorKey:&errorKey];
+}
+
+- (void)shareFileForAttachmentId:(NSString *)attachmentId {
+    if (![attachmentId isKindOfClass:[NSString class]] || attachmentId.length == 0) return;
+    NSString *cid = self.conversation[@"id"];
+    for (NSDictionary *message in self.conversation[@"messages"]) {
+        NSArray *atts = message[@"attachments"];
+        if (![atts isKindOfClass:[NSArray class]]) continue;
+        for (NSDictionary *att in atts) {
+            if (![att[@"id"] isEqualToString:attachmentId] || ![att[@"kind"] isEqualToString:@"file"]) continue;
+            NSString *path = [AttachmentStore pathForFile:att[@"file"] conversation:cid];
+            if (!path) return;
+            // Share a copy with the real name, so the person sees "bao-cao.docx" and not a UUID.
+            NSString *shareDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ClaudeMiniShare"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:shareDir withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *shareName = [att[@"name"] isKindOfClass:[NSString class]] ? att[@"name"] : @"tep";
+            NSString *sharePath = [shareDir stringByAppendingPathComponent:shareName];
+            [[NSFileManager defaultManager] removeItemAtPath:sharePath error:nil];
+            [[NSFileManager defaultManager] copyItemAtPath:path toPath:sharePath error:nil];
+            [self.view endEditing:YES];
+            UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:sharePath]] applicationActivities:nil];
+            activity.popoverPresentationController.sourceView = self.view;
+            activity.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+            [self presentViewController:activity animated:YES completion:nil];
+            return;
+        }
+    }
+}
+
+// Search only when the question is about something that can change or must be checked.
+- (BOOL)wantsWebSearch {
+    NSString *text = [[self lastUserText] lowercaseString];
+    NSArray *signals = @[@"tìm", @"tra cứu", @"search", @"google", @"hôm nay", @"hôm qua", @"mới nhất", @"gần đây",
+                         @"hiện tại", @"bây giờ", @"tin tức", @"news", @"latest", @"today", @"current", @"price",
+                         @"giá", @"tỉ giá", @"thời tiết", @"kết quả", @"breaking", @"2025", @"2026"];
+    for (NSString *signal in signals) {
+        if ([text containsString:signal]) return YES;
+    }
+    return NO;
 }
 
 - (NSString *)effectiveSystemPrompt {
@@ -3145,24 +3074,30 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     for (NSString *signal in codingSignals) {
         if ([lowerQuery containsString:signal]) { codingTask = YES; break; }
     }
-
-    AIReasoningLevel rLevel = [AppSettings reasoningLevel];
-    NSString *responseDirective = nil;
-    if (rLevel == AIReasoningLevelLow) {
-        responseDirective = @"\n\n[TURBO FAST MODE] Answer immediately, concisely, and directly to the point with maximum speed and zero filler.";
-    } else if (rLevel == AIReasoningLevelMedium) {
-        responseDirective = @"\n\n[FAST BALANCED MODE] Give a fast, clear, well-structured answer with practical accuracy and no fluff.";
-    } else {
-        responseDirective = @"\n\n[MAXIMUM REASONING & CREATIVITY MODE] Think deeply, explore sharp/creative solutions, identify exact root causes, verify edge cases, and deliver thorough, complete, actionable details without truncating or skipping steps.";
-    }
+    NSString *responseDirective = @"\n\n[RESPONSE COMPLETENESS] Unless the user explicitly asks for a short answer, answer every part with enough useful detail to act on it. Do not substitute a long outline for the requested explanation, implementation, or deliverable. Include relevant steps, examples, assumptions, and limitations without filler. For technical topics, identify the actual cause before proposing a change; distinguish verified facts from hypotheses. Never claim a search, API action, file edit, or build succeeded unless it actually did.";
     selectedPrompt = [selectedPrompt stringByAppendingString:responseDirective];
-
     if (codingTask) {
-        NSString *codingDirective = @"\n\n[CODING RESPONSE REQUIREMENTS] Deliver complete, compilable code for every requested function or changed file section with all required declarations/imports. Never replace code with ellipses, placeholders, TODOs, or pseudo-code. When continuing across chunks, resume from the exact next character without repeating already-emitted text.";
+        NSString *codingDirective = @"\n\n[CODING RESPONSE REQUIREMENTS] For a coding, debugging, or source-editing request, deliver implementation rather than an outline alone. Include the complete requested function or changed file sections with all required declarations/imports; do not replace code with ellipses, placeholders, TODOs, or pseudo-code. Do not describe a large architecture while returning only a tiny code fragment. When the user asks for a complete file or a large implementation, provide the full requested code, not a shortened sample. Do not arbitrarily stop after the design or first few functions; continue until every requested component is implemented. Preserve unrelated behavior and make only requested changes. Check method names, property declarations, types, API payload fields, and error paths for consistency. Explain the exact files and behavior changed, then clearly state anything not build-tested. Prefer complete, compilable code over an inflated architecture proposal. The app automatically requests continuation when the provider reports its output-token limit; continue from the exact next line without repeating earlier code. If continuation cannot proceed because the model context or provider limit is reached, state the precise remaining section instead of claiming the work is complete.";
         selectedPrompt = [selectedPrompt stringByAppendingString:codingDirective];
     }
-    if ([AppSettings webSearchEnabled]) {
-        selectedPrompt = [selectedPrompt stringByAppendingString:@"\n\n[WEB SEARCH ENABLED] A real provider-managed web search tool is attached to this request. When the user explicitly asks to search, or the answer depends on current, recent, external, or verifiable information, you MUST invoke the search tool before answering and base factual claims on the returned results."];
+    AIReasoningLevel rLevel = [AppSettings reasoningLevel];
+    NSString *levelDirective = nil;
+    if (rLevel == AIReasoningLevelLow) {
+        levelDirective = @"\n\n[FAST MODE] Answer directly and concisely. Skip optional detail.";
+    } else if (rLevel == AIReasoningLevelMedium) {
+        levelDirective = @"\n\n[BALANCED MODE] Think before answering. Give a complete, well-structured answer with the key details.";
+    } else if (rLevel == AIReasoningLevelHigh) {
+        levelDirective = @"\n\n[DEEP REASONING MODE] Think through the problem step by step and check the reasoning for errors before concluding. Give a thorough, detailed answer that covers edge cases and explains why, not only what.";
+    } else if (rLevel == AIReasoningLevelVeryHigh) {
+        levelDirective = @"\n\n[VERY DEEP REASONING MODE] Analyse the problem from several angles, compare the options, and verify each conclusion before stating it. Give a long, precise, detailed answer with concrete examples and numbers where they apply. If you find a mistake while reasoning, correct it explicitly.";
+    } else {
+        levelDirective = @"\n\n[MAXIMUM REASONING MODE] Take as long as needed. Explore alternative solutions, test each against the requirements, and self-review the final answer for errors, fixing them before presenting it. Give the most complete, precise and detailed answer possible, with full steps, edge cases, verification and a clear summary at the end.";
+    }
+    selectedPrompt = [selectedPrompt stringByAppendingString:levelDirective];
+    selectedPrompt = [selectedPrompt stringByAppendingString:
+        @"\n\n[FILE OUTPUT] When the person needs a file to download (Word, text, CSV, HTML, source code...), put the complete file content inside one block that starts with three backticks followed by file:FILENAME.EXT and ends with three backticks, for example: ```file:bao-cao.docx on its own line, then the content, then ``` on its own line. Supported: .docx, .txt, .md, .csv, .json, .html, and common source-code extensions. Outside that block, write one short sentence saying what the file contains. Do not use this block for ordinary answers."];
+    if (self.searchAllowedForReply) {
+        selectedPrompt = [selectedPrompt stringByAppendingString:@"\n\n[WEB SEARCH ENABLED] A real provider-managed web search tool is attached to this request. When the user explicitly asks to search, or the answer depends on current, recent, external, or verifiable information, you MUST invoke the search tool before answering and base factual claims on the returned results. Do not claim to have searched unless the API actually returned results. If the selected model/provider rejects or does not support the tool, state that limitation plainly instead of pretending the search happened." ];
     }
     return selectedPrompt;
 }
@@ -3181,125 +3116,92 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
             (unsigned long)turns.count, (unsigned long)images, (unsigned long)pdfs, mediaChars / 1048576.0, (unsigned long)textChars];
 }
 
-- (NSString *)stripRepeatedPrefixFrom:(NSString *)chunk againstExisting:(NSString *)existing {
-    if (chunk.length == 0 || existing.length == 0) return chunk;
-    NSUInteger checkLen = MIN((NSUInteger)400, MIN(existing.length, chunk.length));
-    NSString *tail = [existing substringFromIndex:existing.length - checkLen];
-    for (NSUInteger len = checkLen; len >= 16; len--) {
-        NSString *suffix = [tail substringFromIndex:tail.length - len];
-        if ([chunk hasPrefix:suffix]) {
-            return [chunk substringFromIndex:len];
-        }
-    }
-    return chunk;
-}
-
 - (void)launchRequestStreaming:(BOOL)useStreaming {
     self.attemptIsStreaming = useStreaming;
     AIProvider provider = [Provider forModelId:self.model];
-    NSString *key = [KeyStore loadKeyForProvider:provider] ?: @"";
-    NSString *modelId = [self.model copy];
-    NSString *accumulated = [self.longReplyAccumulator copy];
+    // Google sign-in: a current access token (refreshed when needed). Safe on the main thread.
+    NSString *key = [KeyStore freshKeyForProvider:provider] ?: @"";
+    NSString *modelId = [self modelIdForThisRequest];
+    // Decided here: the setting, the question and any earlier refusal by the provider.
+    BOOL searchAllowed = [AppSettings webSearchEnabled] && !self.toolsDisabledForReply && [self wantsWebSearch];
+    BOOL codeAllowed = !self.toolsDisabledForReply && provider == AIProviderGemini && [self wantsCodeExecution];
+    self.searchAllowedForReply = searchAllowed;
+    NSMutableArray *turns = [[self buildTurns] mutableCopy];
+    NSString *system = [self effectiveSystemPrompt];
+    if (self.longReplyAccumulator.length > 0) {
+        [turns addObject:[@{ @"role": @"assistant", @"parts": @[@{ @"type": @"text", @"text": [self.longReplyAccumulator copy] }] } mutableCopy]];
+        NSString *continueInstruction = @"Continue the response exactly where the previous assistant message ended. Do not repeat, summarize, shorten, or rewrite any text already provided. If writing code, continue the same file/code block with identical indentation and complete syntax; include every remaining line, declaration, implementation, and closing delimiter. Do not replace code with placeholders or ellipses. Finish the original request fully.";
+        [turns addObject:[@{ @"role": @"user", @"parts": @[@{ @"type": @"text", @"text": continueInstruction }] } mutableCopy]];
 
+        NSInteger inputCap = [ModelStore maxInputTokensForModelId:self.model provider:[Provider forModelId:self.model]];
+        NSUInteger safeCharCap = inputCap > 0 ? MAX((NSUInteger)inputCap * 4, (NSUInteger)1000000) : 1000000;
+        NSUInteger reserve = system.length + 4096;
+        safeCharCap = safeCharCap > reserve ? safeCharCap - reserve : 16000;
+        while (turns.count > 3 && [self totalTextChars:turns] > safeCharCap) [turns removeObjectAtIndex:0];
+        while (turns.count > 1 && [turns.firstObject[@"role"] isEqualToString:@"assistant"]) [turns removeObjectAtIndex:0];
+    }
+    id<ChatStreaming> stream = (provider == AIProviderClaude)
+        ? (id<ChatStreaming>)[[ClaudeStream alloc] initWithKey:key model:modelId turns:turns system:system]
+        : (id<ChatStreaming>)[[GeminiStream alloc] initWithKey:key model:modelId turns:turns system:system];
+    BOOL fastEnabled = [AppSettings fastModeEnabled] && !self.didFallbackFromFastMode;
+    if (provider == AIProviderClaude) {
+        ((ClaudeStream *)stream).useFastSpeed = fastEnabled;
+    } else if ([stream respondsToSelector:NSSelectorFromString(@"setUseFastSpeed:")]) {
+        [(id)stream setValue:@(fastEnabled) forKey:@"useFastSpeed"];
+    }
+    stream.useStreaming = useStreaming;
+    stream.allowWebSearch = searchAllowed;
+    stream.disableTools = self.toolsDisabledForReply;
+    if ([stream isKindOfClass:[GeminiStream class]]) {
+        ((GeminiStream *)stream).allowCodeExecution = codeAllowed;
+    }
+    self.requestUsedTools = !self.toolsDisabledForReply && (searchAllowed || codeAllowed);
+    self.stream = stream;
+    if (!self.streamGeneratedAttachments) self.streamGeneratedAttachments = [NSMutableArray array];
+    self.requestStartTime = CFAbsoluteTimeGetCurrent();
+    [DiagnosticLog log:@"request: %@ model=%@ mode=%@ fast=%d %@ systemChars=%lu", [Provider nameFor:provider], self.model,
+                       useStreaming ? @"stream" : @"single", fastEnabled, [self summaryOfTurns:turns], (unsigned long)system.length];
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    __weak id<ChatStreaming> weakStream = stream;
+    stream.onDelta = ^(NSString *text) {
         ChatViewController *me = weakSelf;
-        if (!me || !me.streaming) return;
-
-        NSMutableArray *turns = [[me buildTurns] mutableCopy];
-        NSString *system = [me effectiveSystemPrompt];
-
-        if (accumulated.length > 0) {
-            [turns addObject:[@{ @"role": @"assistant", @"parts": @[@{ @"type": @"text", @"text": accumulated }] } mutableCopy]];
-            NSUInteger tailLen = MIN((NSUInteger)160, accumulated.length);
-            NSString *exactTail = [accumulated substringFromIndex:accumulated.length - tailLen];
-            NSString *continueInstruction = [NSString stringWithFormat:
-                @"Continue immediately from the exact end of your previous message without repeating a single word, line, or markdown fence. Last characters:\n<<<%@>>>\nOutput ONLY the remaining continuation.",
-                exactTail];
-            [turns addObject:[@{ @"role": @"user", @"parts": @[@{ @"type": @"text", @"text": continueInstruction }] } mutableCopy]];
-
-            NSUInteger safeCharCap = [me resolvedContextCharLimit];
-            while (turns.count > 3 && [me totalTextChars:turns] > safeCharCap) [turns removeObjectAtIndex:0];
-            while (turns.count > 1 && [turns.firstObject[@"role"] isEqualToString:@"assistant"]) [turns removeObjectAtIndex:0];
+        if (!me || me.stream != weakStream || text.length == 0) return;
+        [me stopThinkingTimer];
+        [me.streamBuffer appendString:text];
+        if (me.pendingJSDelta) {
+            [me.pendingJSDelta appendString:text];
+        } else {
+            [me callJS:@"delta" args:@[text]];
         }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ChatViewController *strongMe = weakSelf;
-            if (!strongMe || !strongMe.streaming) return;
-
-            id<ChatStreaming> stream = (provider == AIProviderClaude)
-                ? (id<ChatStreaming>)[[ClaudeStream alloc] initWithKey:key model:modelId turns:turns system:system]
-                : (id<ChatStreaming>)[[GeminiStream alloc] initWithKey:key model:modelId turns:turns system:system];
-            BOOL fastEnabled = [AppSettings fastModeEnabled] && !strongMe.didFallbackFromFastMode;
-            if (provider == AIProviderClaude) {
-                ((ClaudeStream *)stream).useFastSpeed = fastEnabled;
-            } else if ([stream respondsToSelector:NSSelectorFromString(@"setUseFastSpeed:")]) {
-                [(id)stream setValue:@(fastEnabled) forKey:@"useFastSpeed"];
-            }
-            stream.useStreaming = useStreaming;
-            strongMe.stream = stream;
-            if (!strongMe.streamGeneratedAttachments) strongMe.streamGeneratedAttachments = [NSMutableArray array];
-            strongMe.requestStartTime = CFAbsoluteTimeGetCurrent();
-            [DiagnosticLog log:@"request: %@ model=%@ mode=%@ fast=%d %@ systemChars=%lu", [Provider nameFor:provider], modelId,
-                               useStreaming ? @"stream" : @"single", fastEnabled, [strongMe summaryOfTurns:turns], (unsigned long)system.length];
-
-            __weak id<ChatStreaming> weakStream = stream;
-            __block BOOL checkedOverlap = (strongMe.longReplyAccumulator.length == 0);
-            stream.onDelta = ^(NSString *text) {
-                ChatViewController *inner = weakSelf;
-                if (!inner || inner.stream != weakStream || text.length == 0) return;
-
-                NSString *cleanText = text;
-                if (!checkedOverlap && inner.longReplyAccumulator.length > 0) {
-                    NSString *probe = [inner.streamBuffer stringByAppendingString:text];
-                    if (probe.length >= 32) {
-                        NSString *deduped = [inner stripRepeatedPrefixFrom:probe againstExisting:inner.longReplyAccumulator];
-                        if (deduped.length < probe.length) {
-                            cleanText = deduped;
-                            [inner.streamBuffer setString:@""];
-                        }
-                        checkedOverlap = YES;
-                    }
-                }
-                if (cleanText.length == 0) return;
-
-                [inner.streamBuffer appendString:cleanText];
-                if (inner.pendingJSDelta) {
-                    [inner.pendingJSDelta appendString:cleanText];
-                } else {
-                    [inner callJS:@"delta" args:@[cleanText]];
-                }
-            };
-            stream.onImage = ^(NSData *data, NSString *mimeType) {
-                ChatViewController *inner = weakSelf;
-                if (!inner || inner.stream != weakStream || data.length == 0) return;
-                NSString *errorKey = nil;
-                NSString *imageName = @"generated-image.jpg";
-                NSDictionary *attachment = [AttachmentStore importImageData:data name:imageName
-                                                                 conversation:inner.conversation[@"id"] errorKey:&errorKey];
-                if (attachment) {
-                    [inner.streamGeneratedAttachments addObject:attachment];
-                    [DiagnosticLog log:@"generated image saved: bytes=%@ mime=%@", attachment[@"bytes"], mimeType ?: @"image/*"];
-                } else {
-                    [DiagnosticLog log:@"generated image could not be stored: %@", errorKey ?: @"unknown"];
-                }
-            };
-            stream.onUsage = ^(long long inputTokens, long long outputTokens) {
-                ChatViewController *inner = weakSelf;
-                if (!inner || inner.stream != weakStream) return;
-                [AppSettings addDailyTokenUsage:(inputTokens + outputTokens)];
-                [inner updateDailyTokenPrompt];
-                [DiagnosticLog log:@"usage: input=%lld output=%lld dayTotal=%lld", inputTokens, outputTokens, [AppSettings dailyTokenUsage]];
-            };
-            stream.onFinish = ^(GeminiStreamError error, NSInteger status, NSString *detail) {
-                ChatViewController *inner = weakSelf;
-                if (!inner || inner.stream != weakStream) return;
-                [inner flushPendingJSDelta];
-                [inner streamFinishedWithError:error status:status detail:detail];
-            };
-            [stream start];
-        });
-    });
+    };
+    stream.onImage = ^(NSData *data, NSString *mimeType) {
+        ChatViewController *me = weakSelf;
+        if (!me || me.stream != weakStream || data.length == 0) return;
+        NSString *errorKey = nil;
+        NSString *imageName = @"generated-image.jpg";
+        NSDictionary *attachment = [AttachmentStore importImageData:data name:imageName
+                                                         conversation:me.conversation[@"id"] errorKey:&errorKey];
+        if (attachment) {
+            [me.streamGeneratedAttachments addObject:attachment];
+            [DiagnosticLog log:@"generated image saved: bytes=%@ mime=%@", attachment[@"bytes"], mimeType ?: @"image/*"];
+        } else {
+            [DiagnosticLog log:@"generated image could not be stored: %@", errorKey ?: @"unknown"];
+        }
+    };
+    stream.onUsage = ^(long long inputTokens, long long outputTokens) {
+        ChatViewController *me = weakSelf;
+        if (!me || me.stream != weakStream) return;
+        [AppSettings addDailyTokenUsage:(inputTokens + outputTokens)];
+        [me updateDailyTokenPrompt];
+        [DiagnosticLog log:@"usage: input=%lld output=%lld dayTotal=%lld", inputTokens, outputTokens, [AppSettings dailyTokenUsage]];
+    };
+    stream.onFinish = ^(GeminiStreamError error, NSInteger status, NSString *detail) {
+        ChatViewController *me = weakSelf;
+        if (!me || me.stream != weakStream) return;
+        [me flushPendingJSDelta];
+        [me streamFinishedWithError:error status:status detail:detail];
+    };
+    [stream start];
 }
 
 - (void)streamFinishedWithError:(GeminiStreamError)error status:(NSInteger)status detail:(NSString *)detail {
@@ -3308,21 +3210,35 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
                        self.attemptIsStreaming ? @"stream" : @"single", StreamErrorName(error), (long)status,
                        (unsigned long)partial.length, (CFAbsoluteTimeGetCurrent() - self.requestStartTime) * 1000, ClippedForLog(detail)];
 
+    // A stream that closed quietly (no error, but also no final event) is continued; a provider that never sends the final
+    // event must not make every reply loop, so after two such continuations the reply counts as finished.
+    if (error == GeminiStreamErrorNetwork && [detail isEqualToString:kStreamEndedEarlyMarker]) {
+        if (partial.length == 0 || self.earlyEndContinuations >= 2) {
+            error = GeminiStreamErrorNone;
+            status = 200;
+            detail = nil;
+        } else {
+            self.earlyEndContinuations++;
+        }
+    }
+
     AIProvider currentProvider = [Provider forModelId:self.model];
-    BOOL interruptedMidStream = (error == GeminiStreamErrorNetwork || error == GeminiStreamErrorServer) && partial.length > 0 && self.longReplyContinuationCount < 8;
+    BOOL interruptedMidStream = (error == GeminiStreamErrorNetwork || error == GeminiStreamErrorServer) && partial.length > 0 && self.longReplyContinuationCount < 6;
     if (((error == GeminiStreamErrorNone && status == 200 && [detail isEqualToString:@"__OUTPUT_LIMIT_REACHED__"]) || interruptedMidStream) && partial.length > 0) {
-        const NSUInteger kMaxAutomaticContinuations = 12;
-        NSUInteger continuationCharCap = [self resolvedContextCharLimit];
+        const NSUInteger kMaxAutomaticContinuations = 10;
+        NSInteger continuationInputCap = [ModelStore maxInputTokensForModelId:self.model provider:currentProvider];
+        NSUInteger continuationCharCap = continuationInputCap > 0 ? MAX((NSUInteger)continuationInputCap * 4, (NSUInteger)1500000) : 1500000;
+        NSUInteger continuationPromptChars = [self effectiveSystemPrompt].length + 8192;
+        continuationCharCap = continuationCharCap > continuationPromptChars ? continuationCharCap - continuationPromptChars : 0;
         BOOL continuationFitsContext = continuationCharCap > 0 &&
-            (self.longReplyAccumulator.length + partial.length) < ((continuationCharCap * 4) / 5);
+            self.longReplyAccumulator.length + partial.length < (continuationCharCap * 3) / 4;
         if (self.longReplyContinuationCount < kMaxAutomaticContinuations &&
-            (self.longReplyAccumulator.length + partial.length) < 3000000 && continuationFitsContext) {
+            self.longReplyAccumulator.length + partial.length < 3000000 && continuationFitsContext) {
             if (!self.longReplyAccumulator) self.longReplyAccumulator = [NSMutableString string];
             [self.longReplyAccumulator appendString:partial];
             self.longReplyContinuationCount++;
             self.stream = nil;
             self.streamBuffer = [NSMutableString string];
-            [self flushPendingJSDelta];
             [DiagnosticLog log:@"continuing response segment %lu/%lu accumulatedChars=%lu",
                               (unsigned long)self.longReplyContinuationCount, (unsigned long)kMaxAutomaticContinuations,
                               (unsigned long)self.longReplyAccumulator.length];
@@ -3333,6 +3249,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         }
         detail = @"Đã đạt giới hạn an toàn của chuỗi tự nối tiếp. Phần đã tạo được giữ lại; gửi 'tiếp tục' để lấy phần còn lại.";
     }
+    NSInteger claudeModelOutputCap = [ModelStore maxOutputTokensForModelId:self.model provider:AIProviderClaude];
+    NSInteger configuredOutputCap = [AppSettings maxOutputTokens];
+    BOOL largeClaudeReply = currentProvider == AIProviderClaude &&
+        (configuredOutputCap > 21333 || (configuredOutputCap == 0 && claudeModelOutputCap > 21333));
 
     NSString *lowerDetail = detail.lowercaseString ?: @"";
     BOOL permanentQuota = status == 429 &&
@@ -3345,17 +3265,34 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
          [lowerDetail containsString:@"payment"] || [lowerDetail containsString:@"quota_exceeded"]);
 
     BOOL wasFastRequest = self.stream && [AppSettings fastModeEnabled] && !self.didFallbackFromFastMode;
+    NSString *fastErrorText = lowerDetail;
     BOOL fastRateLimited = wasFastRequest && !permanentQuota && (status == 429 || status == 529);
     BOOL fastRejected = wasFastRequest && (status == 400 || status == 403) &&
-                        ([lowerDetail containsString:@"fast"] || [lowerDetail containsString:@"speed"]);
+                        ([fastErrorText containsString:@"fast"] || [fastErrorText containsString:@"speed"]);
     if ((fastRateLimited || fastRejected) && partial.length == 0 &&
         self.streamGeneratedAttachments.count == 0 && !self.didFallbackFromFastMode) {
         self.didFallbackFromFastMode = YES;
         NSTimeInterval fastRetryAfter = self.stream.retryAfterSeconds;
         self.stream = nil;
-        [DiagnosticLog log:@"Fast mode rejected/limited; retrying at standard speed"];
-        NSTimeInterval fallbackDelay = fastRateLimited ? MAX(0.3, MIN(5.0, fastRetryAfter)) : 0.15;
+        [DiagnosticLog log:@"Fast mode rejected/limited; retrying once at standard speed"];
+        NSTimeInterval fallbackDelay = fastRateLimited ? MAX(1.0, MIN(900.0, fastRetryAfter)) : 0.4;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(fallbackDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
+        });
+        return;
+    }
+
+    // Search or code tools can be refused for a key, a model or a region (403 / 400). Retry this reply once without them.
+    BOOL toolsRejected = self.requestUsedTools && !self.toolsDisabledForReply && partial.length == 0 &&
+        self.streamGeneratedAttachments.count == 0 &&
+        (error == GeminiStreamErrorPermissionDenied || error == GeminiStreamErrorUnknown ||
+         status == 400 || status == 403 || status == 404);
+    if (toolsRejected) {
+        self.toolsDisabledForReply = YES;
+        self.requestUsedTools = NO;
+        self.stream = nil;
+        [DiagnosticLog log:@"tool request refused (HTTP %ld): retrying the reply without search and code tools", (long)status];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
         });
         return;
@@ -3363,14 +3300,14 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
     BOOL retryableStatus = (status == 429 || status == 500 || status == 502 || status == 503 || status == 504 || status == 529);
     BOOL transientServer = (error == GeminiStreamErrorServer || error == GeminiStreamErrorRateLimited) && retryableStatus;
-    NSInteger retryLimit = status == 429 ? 2 : 3;
+    NSInteger retryLimit = status == 429 ? 1 : 3;
     if (transientServer && !permanentQuota && partial.length == 0 && self.streamGeneratedAttachments.count == 0 && self.streamRetryCount < retryLimit) {
         NSTimeInterval providerDelay = self.stream.retryAfterSeconds;
         self.stream = nil;
         self.streamRetryCount++;
-        NSTimeInterval backoff = status == 429 ? 1.5 : (0.5 * self.streamRetryCount);
-        NSTimeInterval delay = providerDelay > 0 ? MIN(6.0, MAX(backoff, providerDelay)) : backoff;
-        [DiagnosticLog log:@"server overload HTTP %ld: retry %ld after %.1fs", (long)status, (long)self.streamRetryCount, delay];
+        NSTimeInterval backoff = status == 429 ? 8.0 : (self.streamRetryCount == 1 ? 1.5 : (self.streamRetryCount == 2 ? 4.0 : 8.0));
+        NSTimeInterval delay = MAX(backoff, MIN(900.0, providerDelay));
+        [DiagnosticLog log:@"server overload HTTP %ld: retry %ld after %.0fs", (long)status, (long)self.streamRetryCount, delay];
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
         });
@@ -3427,11 +3364,23 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         return;
     }
 
-    if (error == GeminiStreamErrorNetwork && partial.length == 0 && self.streamGeneratedAttachments.count == 0 && self.attemptIsStreaming) {
+    // A timed-out stream would only wait another full timeout in the single-request fallback, so it is not retried here.
+    BOOL timedOutStream = [detail containsString:@"-1001"];
+    if (error == GeminiStreamErrorNetwork && !timedOutStream && partial.length == 0 && self.streamGeneratedAttachments.count == 0 && self.attemptIsStreaming) {
         self.stream = nil;
-        [DiagnosticLog log:@"live stream failed before any text: retrying immediately as a single request"];
-        [self launchRequestStreaming:NO];
-        return;
+        if (largeClaudeReply && self.streamRetryCount < 1) {
+            self.streamRetryCount++;
+            [DiagnosticLog log:@"large Claude stream failed before first event: retrying stream once"];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
+            });
+            return;
+        }
+        if (!largeClaudeReply) {
+            [DiagnosticLog log:@"live stream failed before any text: retrying once as a single request"];
+            [self launchRequestStreaming:NO];
+            return;
+        }
     }
 
     [self stopDeltaFlushTimer];
@@ -3442,15 +3391,21 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     NSString *completeReply = self.longReplyAccumulator.length > 0
         ? [self.longReplyAccumulator stringByAppendingString:(partial ?: @"")]
         : partial;
+    if (!self.streamGeneratedAttachments) self.streamGeneratedAttachments = [NSMutableArray array];
+    NSMutableArray *fileAttachments = [NSMutableArray array];
+    completeReply = [self extractFileBlocksFromReply:completeReply intoAttachments:fileAttachments];
+    [self.streamGeneratedAttachments addObjectsFromArray:fileAttachments];
     NSArray *generatedAttachments = [self.streamGeneratedAttachments copy] ?: @[];
     if (completeReply.length > 0 || generatedAttachments.count > 0) {
         [self appendAssistantMessage:completeReply attachments:generatedAttachments];
     }
     self.longReplyAccumulator = nil;
     self.longReplyContinuationCount = 0;
+    self.earlyEndContinuations = 0;
     self.streamGeneratedAttachments = nil;
     [self callJS:@"end" args:@[(completeReply ?: @"")]];
     if (generatedAttachments.count > 0) [self renderConversation];
+    if ([detail isEqualToString:kStreamEndedEarlyMarker]) detail = @"Kết nối bị ngắt khi AI đang trả lời. Phần đã nhận được giữ lại; gửi 'tiếp tục' để lấy phần còn lại.";
     if ([detail hasPrefix:@"Đã đạt giới hạn an toàn của chuỗi tự nối tiếp."]) {
         [self callJS:@"error" args:@[detail, @YES]];
     } else if (error != GeminiStreamErrorNone && error != GeminiStreamErrorCancelled) {
@@ -3472,6 +3427,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     [messages addObject:message];
     self.conversation[@"updated"] = @([[NSDate date] timeIntervalSince1970]);
     [ConversationStore saveConversation:self.conversation];
+    [self refreshPinnedSidebar];
 }
 
 - (void)abandonStream {
@@ -3492,6 +3448,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     if (completeReply.length > 0 || generatedAttachments.count > 0) [self appendAssistantMessage:completeReply attachments:generatedAttachments];
     self.longReplyAccumulator = nil;
     self.longReplyContinuationCount = 0;
+    self.earlyEndContinuations = 0;
     self.streamGeneratedAttachments = nil;
     [self updateSendButton];
 }
@@ -3522,6 +3479,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 
     self.conversation[@"updated"] = @([[NSDate date] timeIntervalSince1970]);
     [ConversationStore saveConversation:self.conversation];
+    [self refreshPinnedSidebar];
     [self renderConversation];
     [self refreshAttachStrip];
     self.textView.text = text;
@@ -3537,6 +3495,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     if (![messages.lastObject[@"role"] isEqualToString:@"user"]) return;
     self.conversation[@"updated"] = @([[NSDate date] timeIntervalSince1970]);
     [ConversationStore saveConversation:self.conversation];
+    [self refreshPinnedSidebar];
     [self renderConversation];
     [self startStreamingReply];
 }
@@ -3546,13 +3505,15 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (NSString *)messageForError:(GeminiStreamError)error status:(NSInteger)status detail:(NSString *)detail {
     NSString *base = nil;
     BOOL showDetail = NO;
-    BOOL usingGoogle = ([Provider forModelId:self.model] == AIProviderGemini) && [KeyStore geminiUsesGoogleAccount];
     switch (error) {
-        case GeminiStreamErrorInvalidKey:       base = usingGoogle ? L(@"err_google_auth") : L(@"err_invalid_key"); break;
-        case GeminiStreamErrorPermissionDenied: base = usingGoogle ? L(@"err_google_permission") : L(@"err_permission"); showDetail = YES; break;
+        case GeminiStreamErrorInvalidKey:       base = L(@"err_invalid_key"); break;
+        case GeminiStreamErrorPermissionDenied: base = L(@"err_permission"); showDetail = YES; break;
         case GeminiStreamErrorModelNotFound:    base = L(@"err_model_not_found"); break;
         case GeminiStreamErrorRateLimited:      base = L(@"err_rate"); showDetail = YES; break;
-        case GeminiStreamErrorNetwork:          base = L(@"err_network"); showDetail = YES; break;
+        case GeminiStreamErrorNetwork:
+            base = [detail containsString:@"-1001"] ? L(@"err_timeout") : L(@"err_network");
+            showDetail = YES;
+            break;
         case GeminiStreamErrorBlocked:          base = L(@"err_blocked"); break;
         case GeminiStreamErrorEmptyReply:       base = L(@"err_empty_reply"); break;
         case GeminiStreamErrorTooLarge:         base = L(@"err_too_large"); break;

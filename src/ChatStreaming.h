@@ -16,6 +16,10 @@ typedef NS_ENUM(NSInteger, GeminiStreamError) {   // (name kept from the first v
     GeminiStreamErrorUnknown
 };
 
+// Markers a stream puts in `detail` for the chat to act on (the chat continues the reply by itself).
+static NSString *const kStreamOutputLimitMarker = @"__OUTPUT_LIMIT_REACHED__";   // the length limit cut the reply (error None)
+static NSString *const kStreamEndedEarlyMarker  = @"__STREAM_ENDED_EARLY__";     // the stream closed without its final event (error Network)
+
 // One request to a chat model (live stream, or a single request as a fallback). All callbacks run on the main queue.
 //
 // The conversation is passed as provider-neutral "turns", each converted to the provider's JSON by the stream itself:
@@ -27,6 +31,8 @@ typedef NS_ENUM(NSInteger, GeminiStreamError) {   // (name kept from the first v
 
 // YES (default): live stream (Server-Sent Events). NO: one normal request/response, delivered as a single delta.
 @property (assign, nonatomic) BOOL useStreaming;
+@property (assign, nonatomic) BOOL allowWebSearch;   // per request: the person's setting AND the question needs fresh facts
+@property (assign, nonatomic) BOOL disableTools;     // retry without search/code tools after the provider refused them
 @property (assign, nonatomic) NSTimeInterval retryAfterSeconds; // HTTP Retry-After, when supplied by the provider
 
 @property (copy, nonatomic) void (^onDelta)(NSString *text);

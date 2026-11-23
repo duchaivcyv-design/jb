@@ -45,7 +45,13 @@ extern NSString *const kNotifUpdateChanged;   // posted on the main thread whene
 @property (assign, nonatomic, readonly) long long receivedBytes;
 @property (copy, nonatomic, readonly) NSString *downloadedPath;
 @property (copy, nonatomic, readonly) NSString *errorMessage;
+@property (assign, nonatomic, readonly) BOOL devChannel;            // YES while the password-protected developer channel is in use
 @property (assign, nonatomic, readonly) BOOL updateAvailable;       // a newer version is known (Available, Downloading or Downloaded)
+
+// Switches between the normal releases and the developer builds (tag dev-..., files encrypted with the developer
+// password, see DevAccess). Cancels a running check / download and forgets the state of the other channel. The caller
+// must have unlocked DevAccess before switching to the developer channel.
+- (void)switchToDevChannel:(BOOL)dev;
 
 // Checks GitHub. Without force it is skipped when a check ran in the last 10 minutes.
 - (void)checkForUpdateForce:(BOOL)force;

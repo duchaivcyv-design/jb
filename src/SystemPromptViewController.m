@@ -1,9 +1,12 @@
 #import "SystemPromptViewController.h"
 #import "Strings.h"
 #import "Theme.h"
+#import "Material.h"
 #import "AppSettings.h"
+#import "InstructionFile.h"
 
-@interface SystemPromptViewController () <UITextViewDelegate>
+@interface SystemPromptViewController () <UITextViewDelegate, UIDocumentPickerDelegate>
+@property (strong, nonatomic) UIButton *importButton;
 @property (strong, nonatomic) UILabel *hintLabel;
 @property (strong, nonatomic) UITextView *textView;
 @property (strong, nonatomic) UILabel *placeholderLabel;
@@ -27,9 +30,19 @@
     self.hintLabel.numberOfLines = 0;
     [self.view addSubview:self.hintLabel];
 
+    self.importButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    [self.importButton setTitle:L(@"instr_import_button") forState:UIControlStateNormal];
+    [self.importButton setTitleColor:[Theme accent] forState:UIControlStateNormal];
+    self.importButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    self.importButton.layer.cornerRadius = MR(12, 21);   // half of the 42 pt height
+    self.importButton.layer.borderWidth = 1.5;
+    self.importButton.layer.borderColor = [Theme accent].CGColor;
+    [self.importButton addTarget:self action:@selector(importTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.importButton];
+
     self.textView = [[UITextView alloc] init];
     self.textView.backgroundColor = [Theme surface];
-    self.textView.layer.cornerRadius = 12;
+    self.textView.layer.cornerRadius = MR(12, 16);
     self.textView.layer.borderWidth = 1;
     self.textView.layer.borderColor = [Theme border].CGColor;
     self.textView.font = [UIFont systemFontOfSize:16];
@@ -84,7 +97,8 @@
 
     CGSize hint = [self.hintLabel sizeThatFits:CGSizeMake(width - 32, CGFLOAT_MAX)];
     self.hintLabel.frame = CGRectMake(16, 14, width - 32, ceil(hint.height));
-    CGFloat top = CGRectGetMaxY(self.hintLabel.frame) + 12;
+    self.importButton.frame = CGRectMake(16, CGRectGetMaxY(self.hintLabel.frame) + 12, width - 32, 42);
+    CGFloat top = CGRectGetMaxY(self.importButton.frame) + 12;
     self.counterLabel.frame = CGRectMake(16, height - bottom - 24, width - 32, 18);
     self.textView.frame = CGRectMake(16, top, width - 32, MAX(80, height - bottom - 30 - top));
     CGSize ph = [self.placeholderLabel sizeThatFits:CGSizeMake(width - 32 - 32, CGFLOAT_MAX)];
@@ -136,6 +150,35 @@
     }
     self.placeholderLabel.hidden = textView.text.length > 0;
     [self updateCounter];
+}
+
+#pragma mark - Import from a file
+
+- (void)importTapped {
+    [self.view endEditing:YES];
+    // .clmn is a plain text file under another name: any file can be picked, the content is read as text.
+    UIDocumentPickerViewController *picker =
+        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.data", @"public.text", @"public.content"] inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    if (urls.firstObject) [self importFromURL:urls.firstObject];
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {}
+
+- (void)importFromURL:(NSURL *)url {
+    __weak typeof(self) weakSelf = self;
+    [InstructionFile importFromURL:url presenter:self existing:self.textView.text apply:^(NSString *finalText) {
+        SystemPromptViewController *me = weakSelf;
+        if (!me) return;
+        me.textView.text = finalText;
+        [me textViewDidChange:me.textView];
+        me.textView.selectedRange = NSMakeRange(0, 0);
+        [me.textView scrollRangeToVisible:NSMakeRange(0, 0)];
+    }];
 }
 
 - (void)doneTapped {

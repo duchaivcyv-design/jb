@@ -1,4 +1,4 @@
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -36,8 +36,25 @@ typedef NS_ENUM(NSInteger, AIReasoningLevel) {
 
 // Thu nhỏ / phóng to chữ & giao diện (0.85 = nhỏ, 1.0 = mặc định, 1.15 = lớn). Áp dụng cho tin nhắn và ô nhập.
 + (CGFloat)uiScale;
-+ (NSInteger)fontStyle;               // 0 = Claude (serif titles and answers), 1 = system font
+// Screen layout. 0 = automatic (two panes when the screen is wide), 1 = phone (one pane, portrait only), 2 = iPhone Duo
+// (history list on the left, chat on the right, landscape allowed).
++ (NSInteger)layoutMode;
++ (void)setLayoutMode:(NSInteger)mode;
++ (NSInteger)duoSidebarSize;          // 0 narrow, 1 medium, 2 wide
++ (void)setDuoSidebarSize:(NSInteger)size;
++ (CGFloat)duoSidebarBaseWidth;       // points for the chosen size
++ (BOOL)duoSidebarCollapsed;          // the left pane was folded away with the menu button
++ (void)setDuoSidebarCollapsed:(BOOL)collapsed;
++ (BOOL)duoActiveForSize:(CGSize)size;   // two panes for a view of this size?
++ (UIInterfaceOrientationMask)allowedOrientations;
+
++ (BOOL)autoUpdateCheckEnabled;       // look for a new version at launch / in Settings without being asked (default on)
++ (void)setAutoUpdateCheckEnabled:(BOOL)enabled;
+
++ (NSInteger)fontStyle;               // 0 = Claude (serif titles and answers), 1 = system font, 2 = SF Rounded
 + (void)setFontStyle:(NSInteger)style;
++ (NSInteger)fontWeightStep;           // -3...3: lighter / bolder than normal (0)
++ (void)setFontWeightStep:(NSInteger)step;
 + (void)setUiScale:(CGFloat)scale;
 
 // Tự đọc lời trả lời của AI bằng giọng nói (TTS) sau khi nhận được tin nhắn.

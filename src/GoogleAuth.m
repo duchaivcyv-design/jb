@@ -1,424 +1,529 @@
 #import "GoogleAuth.h"
 #import "KeyStore.h"
-#import "KeyTier.h"
-#import "DiagnosticLog.h"
 #import "Strings.h"
+#import "DiagnosticLog.h"
 #import <AuthenticationServices/AuthenticationServices.h>
 #import <CommonCrypto/CommonDigest.h>
-#import <Security/Security.h>
 
-NSString *const kGoogleOAuthKeyMarker = @"GOOGLE_OAUTH_SESSION";
-NSString *const GoogleAuthErrorDomain = @"GoogleAuth";
+NSString *const GoogleAuthErrorDomain = @"GoogleAuthError";
 
-static NSString *const kAuthEndpoint   = @"https://accounts.google.com/o/oauth2/v2/auth";
-static NSString *const kTokenEndpoint  = @"https://oauth2.googleapis.com/token";
-static NSString *const kRevokeEndpoint = @"https://oauth2.googleapis.com/revoke";
+static NSString *const kAuthEndpoint     = @"https://accounts.google.com/o/oauth2/v2/auth";
+static NSString *const kTokenEndpoint    = @"https://oauth2.googleapis.com/token";
+static NSString *const kUserInfoEndpoint = @"https://openidconnect.googleapis.com/v1/userinfo";
+static NSString *const kClientSuffix     = @".apps.googleusercontent.com";
 
-// Scopes the Gemini API documents for OAuth (ai.google.dev "Authentication with OAuth quickstart").
-static NSString *const kScopes =
-    @"openid email https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever";
+// Identity (to show which account is in use) plus the Gemini API scopes from Google's OAuth quickstart
+// (https://ai.google.dev/gemini-api/docs/oauth). generative-language.retriever is the scope for the Gemini API.
+static NSString *const kScopes = @"openid email https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever";
 
-static NSString *const kDefClientID    = @"googleOAuthClientID";
-static NSString *const kDefProjectID   = @"googleOAuthProjectID";
-static NSString *const kDefEmail       = @"googleOAuthEmail";
-static NSString *const kDefSignedIn    = @"googleOAuthSignedIn";
-static NSString *const kDefPrefer      = @"geminiPrefersGoogle";
-static NSString *const kRefreshSecret  = @"google-refresh-token";
-static NSString *const kClientSuffix   = @".apps.googleusercontent.com";
+static NSString *const kKeychainService   = @"com.puc.claudemini";
+static NSString *const kAccountRefresh    = @"google-refresh-token";
+static NSString *const kAccountAccess     = @"google-access-token";   // stored as "expiryEpoch|token"
+static NSString *const kEmailPrefKey      = @"googleAccountEmail";
+static NSString *const kPrefClientID      = @"googleOAuthClientID";   // entered in the app
+static NSString *const kPrefProjectID     = @"googleCloudProjectID";  // entered in the app
+static const NSTimeInterval kRefreshMargin = 300;   // refresh when less than 5 minutes of validity are left
+static const NSTimeInterval kRetryBackoff  = 30;    // do not retry a failed background refresh more often than this
 
-// OAuth client (type iOS) created by the app owner in Google Cloud. A client ID is public, not a secret.
-static NSString *const kBuiltInClientID = @"249083247394-l5nb5ua39bopp27fdj8c0ldhlrfm8g0k.apps.googleusercontent.com";
+// In-memory state, guarded by @synchronized([GoogleAuth class]).
+static NSString *gRefreshToken;
+static BOOL gRefreshLoaded;
+static NSString *gAccessToken;
+static NSTimeInterval gAccessExpiry;
+static BOOL gAccessLoaded;
+static BOOL gRefreshing;
+static NSTimeInterval gLastRefreshAttempt;
+static id gAuthSession;     // ASWebAuthenticationSession, kept alive while the sign-in page is open
+static id gAuthAnchor;      // presentation anchor for the sign-in page, kept alive with the session
 
-#pragma mark - Small helpers
+#pragma mark - Presentation anchor
 
-static NSString *Trimmed(NSString *s) {
-    if (![s isKindOfClass:[NSString class]]) return @"";
-    return [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+@interface GoogleAuthPresenter : NSObject <ASWebAuthenticationPresentationContextProviding>
+@property (weak, nonatomic) UIWindow *window;
+@end
+
+@implementation GoogleAuthPresenter
+- (ASPresentationAnchor)presentationAnchorForWebAuthenticationSession:(ASWebAuthenticationSession *)session {
+    return self.window ?: [UIApplication sharedApplication].keyWindow;
+}
+@end
+
+#pragma mark - Helpers
+
+static NSString *ClientID(void) {
+    NSString *entered = [[NSUserDefaults standardUserDefaults] stringForKey:kPrefClientID];
+    if (entered.length > 0) return entered;
+    id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"GoogleOAuthClientID"];
+    if (![value isKindOfClass:[NSString class]]) return @"";
+    return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+// Cloud project that owns the quota for requests made with the user's token (set at build time).
+static NSString *CloudProjectID(void) {
+    NSString *entered = [[NSUserDefaults standardUserDefaults] stringForKey:kPrefProjectID];
+    if (entered.length > 0) return entered;
+    id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"GoogleCloudProjectID"];
+    if (![value isKindOfClass:[NSString class]]) return @"";
+    return [value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+// Google's iOS client IDs look like "123-abc.apps.googleusercontent.com"; the redirect uses the reversed form.
+static NSString *RedirectScheme(void) {
+    NSString *clientID = ClientID();
+    NSString *prefix = [clientID hasSuffix:kClientSuffix] ? [clientID substringToIndex:clientID.length - kClientSuffix.length] : clientID;
+    return [@"com.googleusercontent.apps." stringByAppendingString:prefix];
+}
+
+static NSString *RedirectURI(void) {
+    return [RedirectScheme() stringByAppendingString:@":/oauth2redirect"];
+}
+
+static NSString *StringValue(id value) {
+    return [value isKindOfClass:[NSString class]] ? value : nil;
+}
+
+static NSError *GAError(GoogleAuthErrorCode code, NSString *message) {
+    return [NSError errorWithDomain:GoogleAuthErrorDomain code:code
+                           userInfo:message ? @{ NSLocalizedDescriptionKey: message } : nil];
 }
 
 static NSString *Base64URL(NSData *data) {
     NSString *s = [data base64EncodedStringWithOptions:0];
     s = [s stringByReplacingOccurrencesOfString:@"+" withString:@"-"];
     s = [s stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-    s = [s stringByReplacingOccurrencesOfString:@"=" withString:@""];
-    return s;
+    return [s stringByReplacingOccurrencesOfString:@"=" withString:@""];
 }
 
-static NSData *DataFromBase64URL(NSString *s) {
-    NSMutableString *b = [[s stringByReplacingOccurrencesOfString:@"-" withString:@"+"] mutableCopy];
-    [b replaceOccurrencesOfString:@"_" withString:@"/" options:0 range:NSMakeRange(0, b.length)];
-    while (b.length % 4 != 0) [b appendString:@"="];
-    return [[NSData alloc] initWithBase64EncodedString:b options:0];
-}
-
-static NSString *RandomURLSafe(NSUInteger byteCount) {
-    NSMutableData *data = [NSMutableData dataWithLength:byteCount];
-    if (SecRandomCopyBytes(kSecRandomDefault, byteCount, data.mutableBytes) != errSecSuccess) {
-        arc4random_buf(data.mutableBytes, byteCount);
-    }
+static NSString *RandomURLSafeString(size_t bytes) {
+    NSMutableData *data = [NSMutableData dataWithLength:bytes];
+    arc4random_buf(data.mutableBytes, bytes);
     return Base64URL(data);
 }
 
-static NSString *FormEncode(NSString *s) {
-    NSMutableCharacterSet *allowed = [NSMutableCharacterSet alphanumericCharacterSet];
+static NSData *SHA256Data(NSString *text) {
+    NSData *input = [text dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(input.bytes, (CC_LONG)input.length, digest);
+    return [NSData dataWithBytes:digest length:CC_SHA256_DIGEST_LENGTH];
+}
+
+static NSTimeInterval NowEpoch(void) {
+    return [[NSDate date] timeIntervalSince1970];
+}
+
+static NSTimeInterval LifetimeFrom(NSDictionary *json) {
+    id value = json[@"expires_in"];
+    NSTimeInterval seconds = [value respondsToSelector:@selector(doubleValue)] ? [value doubleValue] : 0;
+    return seconds > 60 ? seconds : 3600;
+}
+
+// Form-encoding for application/x-www-form-urlencoded bodies (unreserved characters only).
+static NSString *FormEncode(NSString *value) {
+    NSMutableCharacterSet *allowed = [[NSCharacterSet alphanumericCharacterSet] mutableCopy];
     [allowed addCharactersInString:@"-._~"];
-    return [s stringByAddingPercentEncodingWithAllowedCharacters:allowed] ?: @"";
+    return [value stringByAddingPercentEncodingWithAllowedCharacters:allowed];
 }
 
-static NSData *FormBody(NSDictionary<NSString *, NSString *> *fields) {
-    NSMutableArray *pairs = [NSMutableArray array];
-    for (NSString *key in fields) {
-        [pairs addObject:[NSString stringWithFormat:@"%@=%@", FormEncode(key), FormEncode(fields[key])]];
+static NSURLRequest *FormRequest(NSString *urlString, NSDictionary *params) {
+    NSMutableArray *pairs = [NSMutableArray arrayWithCapacity:params.count];
+    for (NSString *name in params) {
+        [pairs addObject:[NSString stringWithFormat:@"%@=%@", FormEncode(name), FormEncode(params[name])]];
     }
-    return [[pairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
-}
-
-static NSMutableURLRequest *FormPost(NSString *url, NSDictionary *fields) {
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                        timeoutInterval:20];
     request.HTTPMethod = @"POST";
     [request setValue:@"application/x-www-form-urlencoded" forHTTPHeaderField:@"Content-Type"];
-    request.HTTPBody = FormBody(fields);
+    request.HTTPBody = [[pairs componentsJoinedByString:@"&"] dataUsingEncoding:NSUTF8StringEncoding];
     return request;
 }
 
-static NSError *AuthError(GoogleAuthErrorCode code, NSString *message) {
-    return [NSError errorWithDomain:GoogleAuthErrorDomain code:code
-                           userInfo:@{ NSLocalizedDescriptionKey: message ?: @"" }];
+#pragma mark - Keychain (with a 0600 file fallback, like KeyStore)
+
+static NSMutableDictionary *SecretQuery(NSString *account) {
+    return [@{ (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+               (__bridge id)kSecAttrService: kKeychainService,
+               (__bridge id)kSecAttrAccount: account } mutableCopy];
 }
 
-static NSString *EmailFromIDToken(NSString *idToken) {
-    NSArray *parts = [idToken componentsSeparatedByString:@"."];
-    if (parts.count < 2) return @"";
-    NSData *payload = DataFromBase64URL(parts[1]);
-    id json = payload.length ? [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil] : nil;
-    NSString *email = [json isKindOfClass:[NSDictionary class]] ? json[@"email"] : nil;
-    return [email isKindOfClass:[NSString class]] ? email : @"";
+static NSString *SecretFilePath(NSString *account) {
+    NSString *dir = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
+    dir = [dir stringByAppendingPathComponent:@"ClaudeMini"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES
+                                              attributes:@{ NSFilePosixPermissions: @0700 } error:nil];
+    return [dir stringByAppendingPathComponent:[account stringByAppendingString:@".dat"]];
 }
 
-#pragma mark - Presentation anchor (iOS 13+)
-
-API_AVAILABLE(ios(13.0))
-@interface GoogleAuthPresenter : NSObject <ASWebAuthenticationPresentationContextProviding>
-@property (weak, nonatomic) UIWindow *window;
-@end
-
-@implementation GoogleAuthPresenter
-- (UIWindow *)presentationAnchorForWebAuthenticationSession:(ASWebAuthenticationSession *)session {
-    UIWindow *window = self.window;
-    if (!window) window = [UIApplication sharedApplication].keyWindow;
-    return window ?: [[UIWindow alloc] init];
+static void SecretSave(NSString *account, NSString *value) {
+    SecItemDelete((__bridge CFDictionaryRef)SecretQuery(account));
+    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableDictionary *add = SecretQuery(account);
+    add[(__bridge id)kSecValueData] = data;
+    add[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleAfterFirstUnlock;
+    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)add, NULL);
+    NSString *path = SecretFilePath(account);
+    if (status == errSecSuccess) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+        return;
+    }
+    if ([data writeToFile:path options:NSDataWritingAtomic error:nil]) {
+        [[NSFileManager defaultManager] setAttributes:@{ NSFilePosixPermissions: @0600 } ofItemAtPath:path error:nil];
+    }
 }
-@end
 
-#pragma mark - State kept in memory (main thread only)
+static NSString *SecretLoad(NSString *account) {
+    NSMutableDictionary *query = SecretQuery(account);
+    query[(__bridge id)kSecReturnData] = @YES;
+    query[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+    CFTypeRef result = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) == errSecSuccess && result != NULL) {
+        NSData *data = (__bridge_transfer NSData *)result;
+        NSString *value = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (value.length > 0) return value;
+    }
+    NSData *fileData = [NSData dataWithContentsOfFile:SecretFilePath(account)];
+    if (fileData.length > 0) {
+        NSString *value = [[NSString alloc] initWithData:fileData encoding:NSUTF8StringEncoding];
+        if (value.length > 0) return value;
+    }
+    return nil;
+}
 
-static ASWebAuthenticationSession *gSession;
-static id gPresenter;   // GoogleAuthPresenter (iOS 13+), kept alive while the sign-in sheet is open
+static void SecretDelete(NSString *account) {
+    SecItemDelete((__bridge CFDictionaryRef)SecretQuery(account));
+    [[NSFileManager defaultManager] removeItemAtPath:SecretFilePath(account) error:nil];
+}
 
-static NSString *gAccessToken;
-static NSDate *gAccessExpiry;
-static BOOL gRefreshing;
-static NSMutableArray *gWaiters;   // blocks waiting for the refresh that is in flight
+// Call with the lock held: reads the saved access token once, the first time it is needed.
+static void LoadAccessLocked(void) {
+    if (gAccessLoaded) return;
+    gAccessLoaded = YES;
+    NSString *stored = SecretLoad(kAccountAccess);
+    NSRange bar = [stored rangeOfString:@"|"];
+    if (bar.location == NSNotFound) return;
+    gAccessExpiry = [[stored substringToIndex:bar.location] doubleValue];
+    NSString *token = [stored substringFromIndex:bar.location + 1];
+    if (token.length > 0) gAccessToken = token;
+}
+
+#pragma mark - GoogleAuth
 
 @implementation GoogleAuth
 
-#pragma mark - State
+#pragma mark State
 
-+ (BOOL)isSignedIn { return [[NSUserDefaults standardUserDefaults] boolForKey:kDefSignedIn]; }
-+ (NSString *)accountEmail { return [[NSUserDefaults standardUserDefaults] stringForKey:kDefEmail] ?: @""; }
-+ (NSString *)builtInClientID { return kBuiltInClientID; }
-+ (NSString *)savedClientID {
-    NSString *saved = [[NSUserDefaults standardUserDefaults] stringForKey:kDefClientID];
-    return saved.length > 0 ? saved : kBuiltInClientID;
-}
-+ (NSString *)savedProjectID { return [[NSUserDefaults standardUserDefaults] stringForKey:kDefProjectID] ?: @""; }
-+ (BOOL)prefersGoogle { return [[NSUserDefaults standardUserDefaults] boolForKey:kDefPrefer]; }
-
-+ (void)setPrefersGoogle:(BOOL)prefers {
-    [[NSUserDefaults standardUserDefaults] setBool:prefers forKey:kDefPrefer];
++ (NSString *)cloudProjectID {
+    return CloudProjectID();
 }
 
-+ (BOOL)isValidClientID:(NSString *)clientID {
-    NSString *id_ = Trimmed(clientID);
-    if (![id_ hasSuffix:kClientSuffix]) return NO;
-    NSString *prefix = [id_ substringToIndex:id_.length - kClientSuffix.length];
-    if (prefix.length < 3) return NO;
-    NSCharacterSet *bad = [[NSCharacterSet characterSetWithCharactersInString:
-        @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"] invertedSet];
-    return [prefix rangeOfCharacterFromSet:bad].location == NSNotFound;
++ (NSString *)clientID {
+    return ClientID();
 }
 
-+ (NSString *)redirectSchemeForClientID:(NSString *)clientID {
-    NSString *prefix = [clientID substringToIndex:clientID.length - kClientSuffix.length];
-    return [@"com.googleusercontent.apps." stringByAppendingString:prefix];
++ (BOOL)isValidClientID:(NSString *)candidate {
+    NSString *clean = [candidate stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return [clean hasSuffix:kClientSuffix] && clean.length > kClientSuffix.length && ![clean containsString:@"/"] && ![clean containsString:@":"];
 }
 
-#pragma mark - Sign in
++ (void)saveClientID:(NSString *)clientID projectID:(NSString *)projectID {
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    NSString *client = [clientID stringByTrimmingCharactersInSet:ws] ?: @"";
+    NSString *project = [projectID stringByTrimmingCharactersInSet:ws] ?: @"";
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (client.length > 0) [defaults setObject:client forKey:kPrefClientID]; else [defaults removeObjectForKey:kPrefClientID];
+    if (project.length > 0) [defaults setObject:project forKey:kPrefProjectID]; else [defaults removeObjectForKey:kPrefProjectID];
+    [defaults synchronize];
+}
 
-+ (void)signInWithClientID:(NSString *)clientID
-                 projectID:(NSString *)projectID
-                 presenter:(UIViewController *)presenter
-                completion:(void (^)(BOOL, NSString *))completion {
-    clientID = Trimmed(clientID);
-    projectID = Trimmed(projectID);
-    if (![self isValidClientID:clientID]) {
-        completion(NO, L(@"google_err_client_id"));
++ (BOOL)isConfigured {
+    NSString *clientID = ClientID();
+    return [clientID hasSuffix:kClientSuffix] && clientID.length > kClientSuffix.length;
+}
+
++ (NSString *)refreshTokenValue {
+    @synchronized (self) {
+        if (!gRefreshLoaded) {
+            gRefreshToken = SecretLoad(kAccountRefresh);
+            gRefreshLoaded = YES;
+        }
+        return gRefreshToken;
+    }
+}
+
++ (BOOL)isSignedIn {
+    return [self refreshTokenValue].length > 0;
+}
+
++ (NSString *)accountEmail {
+    return [[NSUserDefaults standardUserDefaults] stringForKey:kEmailPrefKey];
+}
+
++ (void)storeAccessToken:(NSString *)token lifetime:(NSTimeInterval)lifetime {
+    NSTimeInterval expiry = NowEpoch() + lifetime;
+    @synchronized (self) {
+        gAccessToken = [token copy];
+        gAccessExpiry = expiry;
+        gAccessLoaded = YES;
+        SecretSave(kAccountAccess, [NSString stringWithFormat:@"%.0f|%@", expiry, token]);
+    }
+}
+
+// Forgets the sign-in (sign-out, or Google revoked it). Safe to call from any thread.
++ (void)forgetSignInAndNotify:(BOOL)notify {
+    @synchronized (self) {
+        gRefreshToken = nil;
+        gRefreshLoaded = YES;
+        gAccessToken = nil;
+        gAccessExpiry = 0;
+        gAccessLoaded = YES;
+    }
+    SecretDelete(kAccountRefresh);
+    SecretDelete(kAccountAccess);
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:kEmailPrefKey];
+    [KeyStore setGeminiUsesGoogleSignIn:NO];
+    if (notify) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
+        });
+    }
+}
+
++ (void)signOut {
+    [self forgetSignInAndNotify:YES];
+}
+
+#pragma mark Token requests
+
+// Completion runs on a background queue.
++ (void)postForm:(NSDictionary *)params completion:(void (^)(NSDictionary *json, NSInteger status, NSError *error))completion {
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:FormRequest(kTokenEndpoint, params)
+                                                                 completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        id json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        completion([json isKindOfClass:[NSDictionary class]] ? json : nil, status, error);
+    }];
+    [task resume];
+}
+
+// Completion runs on a background queue.
++ (void)refreshWithCompletion:(void (^)(NSString *token, NSError *error))completion {
+    NSString *refresh = [self refreshTokenValue];
+    if (refresh.length == 0) {
+        completion(nil, GAError(GoogleAuthErrorRevoked, @"not signed in"));
         return;
     }
-    if (gSession) {   // a sign-in page is already open
-        completion(NO, nil);
-        return;
-    }
+    NSDictionary *params = @{ @"client_id": ClientID(),
+                              @"grant_type": @"refresh_token",
+                              @"refresh_token": refresh };
+    [self postForm:params completion:^(NSDictionary *json, NSInteger status, NSError *error) {
+        NSString *token = StringValue(json[@"access_token"]);
+        if (token.length > 0 && status == 200) {
+            [self storeAccessToken:token lifetime:LifetimeFrom(json)];
+            completion(token, nil);
+            return;
+        }
+        if (status == 400 && [StringValue(json[@"error"]) isEqualToString:@"invalid_grant"]) {
+            // Revoked in the Google account settings, or the refresh token expired: the person has to sign in again.
+            [self forgetSignInAndNotify:YES];
+            completion(nil, GAError(GoogleAuthErrorRevoked, @"sign-in revoked"));
+            return;
+        }
+        if (error != nil) {
+            completion(nil, GAError(GoogleAuthErrorNetwork, error.localizedDescription));
+        } else {
+            completion(nil, GAError(GoogleAuthErrorNoToken, [NSString stringWithFormat:@"token HTTP %ld", (long)status]));
+        }
+    }];
+}
 
-    NSString *verifier = RandomURLSafe(48);
-    NSString *challenge = ({
-        NSData *vData = [verifier dataUsingEncoding:NSUTF8StringEncoding];
-        uint8_t digest[CC_SHA256_DIGEST_LENGTH];
-        CC_SHA256(vData.bytes, (CC_LONG)vData.length, digest);
-        Base64URL([NSData dataWithBytes:digest length:CC_SHA256_DIGEST_LENGTH]);
++ (void)startBackgroundRefresh {
+    @synchronized (self) {
+        NSTimeInterval now = NowEpoch();
+        if (gRefreshing || now - gLastRefreshAttempt < kRetryBackoff) return;
+        gRefreshing = YES;
+        gLastRefreshAttempt = now;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [self refreshWithCompletion:^(NSString *token, NSError *error) {
+            @synchronized (self) { gRefreshing = NO; }
+            if (error != nil) [DiagnosticLog log:@"google token refresh failed: %@", error.localizedDescription];
+        }];
     });
-    NSString *state = RandomURLSafe(18);
-    NSString *scheme = [self redirectSchemeForClientID:clientID];
-    NSString *redirect = [scheme stringByAppendingString:@":/oauth2redirect"];
+}
+
++ (NSString *)accessTokenNonBlocking {
+    NSString *token = nil;
+    BOOL needsRefresh = NO;
+    @synchronized (self) {
+        LoadAccessLocked();
+        token = gAccessToken;
+        needsRefresh = token.length == 0 || gAccessExpiry - NowEpoch() < kRefreshMargin;
+    }
+    if (needsRefresh && [self isSignedIn]) [self startBackgroundRefresh];
+    return token;
+}
+
++ (NSString *)accessTokenBlocking {
+    if ([NSThread isMainThread]) return [self accessTokenNonBlocking];   // never freeze the UI
+
+    NSString *token = nil;
+    NSTimeInterval expiry = 0;
+    @synchronized (self) {
+        LoadAccessLocked();
+        token = gAccessToken;
+        expiry = gAccessExpiry;
+    }
+    NSTimeInterval now = NowEpoch();
+    if (token.length > 0 && expiry - now > 60) return token;
+    if (![self isSignedIn]) return nil;
+
+    __block NSString *fresh = nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    [self refreshWithCompletion:^(NSString *newToken, NSError *error) {
+        fresh = newToken;
+        dispatch_semaphore_signal(done);
+    }];
+    dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC));
+    if (fresh.length > 0) return fresh;
+    // Could not refresh now, but a token that has not run out yet still works.
+    return (token.length > 0 && expiry > now) ? token : nil;
+}
+
++ (void)refreshIfNeeded {
+    [self accessTokenNonBlocking];
+}
+
+#pragma mark Sign-in
+
++ (void)fetchEmailWithToken:(NSString *)token completion:(void (^)(NSString *email))completion {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kUserInfoEndpoint]
+                                                           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                       timeoutInterval:15];
+    [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        id json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        completion(StringValue([json isKindOfClass:[NSDictionary class]] ? json[@"email"] : nil));
+    }] resume];
+}
+
+// Runs on a background queue. Calls finish on the main queue.
++ (void)exchangeCode:(NSString *)code verifier:(NSString *)verifier finish:(void (^)(NSError *error))finish {
+    NSDictionary *params = @{ @"client_id": ClientID(),
+                              @"code": code,
+                              @"code_verifier": verifier,
+                              @"grant_type": @"authorization_code",
+                              @"redirect_uri": RedirectURI() };
+    [self postForm:params completion:^(NSDictionary *json, NSInteger status, NSError *error) {
+        NSString *access = StringValue(json[@"access_token"]);
+        NSString *refresh = StringValue(json[@"refresh_token"]);
+        if (access.length == 0) {
+            NSError *failure = error != nil
+                ? GAError(GoogleAuthErrorNetwork, error.localizedDescription)
+                : GAError(GoogleAuthErrorNoToken, [NSString stringWithFormat:@"token HTTP %ld", (long)status]);
+            dispatch_async(dispatch_get_main_queue(), ^{ finish(failure); });
+            return;
+        }
+        // Without a refresh token the app could not keep the sign-in alive after an hour.
+        if (refresh.length == 0 && ![self isSignedIn]) {
+            dispatch_async(dispatch_get_main_queue(), ^{ finish(GAError(GoogleAuthErrorNoToken, @"no refresh token")); });
+            return;
+        }
+        @synchronized (self) {
+            if (refresh.length > 0) {
+                gRefreshToken = refresh;
+                gRefreshLoaded = YES;
+                SecretSave(kAccountRefresh, refresh);
+            }
+        }
+        [self storeAccessToken:access lifetime:LifetimeFrom(json)];
+
+        [self fetchEmailWithToken:access completion:^(NSString *email) {
+            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+            if (email.length > 0) [defaults setObject:email forKey:kEmailPrefKey];
+            else [defaults removeObjectForKey:kEmailPrefKey];
+            [KeyStore setGeminiUsesGoogleSignIn:YES];
+            dispatch_async(dispatch_get_main_queue(), ^{ finish(nil); });
+        }];
+    }];
+}
+
++ (void)signInFromViewController:(UIViewController *)presenter completion:(void (^)(NSError *error))completion {
+    void (^finish)(NSError *) = ^(NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(error); });
+    };
+    if (![self isConfigured]) {
+        finish(GAError(GoogleAuthErrorNotConfigured, @"this build has no Google client ID"));
+        return;
+    }
+
+    // PKCE: the verifier never leaves the device; only its SHA-256 goes into the sign-in URL.
+    NSString *verifier = RandomURLSafeString(32);      // 43 characters, the minimum PKCE length
+    NSString *challenge = Base64URL(SHA256Data(verifier));
+    NSString *state = RandomURLSafeString(16);
 
     NSURLComponents *components = [NSURLComponents componentsWithString:kAuthEndpoint];
     components.queryItems = @[
-        [NSURLQueryItem queryItemWithName:@"client_id" value:clientID],
-        [NSURLQueryItem queryItemWithName:@"redirect_uri" value:redirect],
+        [NSURLQueryItem queryItemWithName:@"client_id" value:ClientID()],
+        [NSURLQueryItem queryItemWithName:@"redirect_uri" value:RedirectURI()],
         [NSURLQueryItem queryItemWithName:@"response_type" value:@"code"],
         [NSURLQueryItem queryItemWithName:@"scope" value:kScopes],
         [NSURLQueryItem queryItemWithName:@"code_challenge" value:challenge],
         [NSURLQueryItem queryItemWithName:@"code_challenge_method" value:@"S256"],
-        [NSURLQueryItem queryItemWithName:@"state" value:state],
         [NSURLQueryItem queryItemWithName:@"access_type" value:@"offline"],
-        [NSURLQueryItem queryItemWithName:@"prompt" value:@"consent"]   // makes Google return a refresh token every time
+        [NSURLQueryItem queryItemWithName:@"prompt" value:@"consent"],
+        [NSURLQueryItem queryItemWithName:@"state" value:state]
     ];
 
-    ASWebAuthenticationSession *session =
-        [[ASWebAuthenticationSession alloc] initWithURL:components.URL
-                                      callbackURLScheme:scheme
-                                      completionHandler:^(NSURL *callbackURL, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            gSession = nil;
-            gPresenter = nil;
-            if (error != nil || callbackURL == nil) {
-                BOOL closed = (error.code == ASWebAuthenticationSessionErrorCodeCanceledLogin);
-                [DiagnosticLog log:@"google sign-in ended: %@ [%ld]", error.domain ?: @"-", (long)error.code];
-                completion(NO, closed ? nil : L(@"google_err_start"));
-                return;
-            }
-            NSURLComponents *back = [NSURLComponents componentsWithURL:callbackURL resolvingAgainstBaseURL:NO];
-            NSString *code = nil, *returnedState = nil, *oauthError = nil;
-            for (NSURLQueryItem *item in back.queryItems) {
-                if ([item.name isEqualToString:@"code"]) code = item.value;
-                else if ([item.name isEqualToString:@"state"]) returnedState = item.value;
-                else if ([item.name isEqualToString:@"error"]) oauthError = item.value;
-            }
-            if (oauthError.length > 0) {
-                completion(NO, [NSString stringWithFormat:L(@"google_err_exchange"), oauthError]);
-                return;
-            }
-            if (code.length == 0 || ![returnedState isEqualToString:state]) {
-                completion(NO, L(@"google_err_state"));
-                return;
-            }
-            [self exchangeCode:code verifier:verifier clientID:clientID redirect:redirect
-                     projectID:projectID completion:completion];
-        });
+    GoogleAuthPresenter *anchor = [[GoogleAuthPresenter alloc] init];
+    anchor.window = presenter.view.window ?: [UIApplication sharedApplication].keyWindow;
+
+    ASWebAuthenticationSession *session = [[ASWebAuthenticationSession alloc]
+        initWithURL:components.URL
+  callbackURLScheme:RedirectScheme()
+  completionHandler:^(NSURL *callbackURL, NSError *error) {
+        gAuthSession = nil;
+        gAuthAnchor = nil;
+
+        if (callbackURL == nil) {
+            BOOL cancelled = [error.domain isEqualToString:ASWebAuthenticationSessionErrorDomain] &&
+                             error.code == ASWebAuthenticationSessionErrorCodeCanceledLogin;
+            finish(cancelled ? GAError(GoogleAuthErrorCancelled, nil)
+                             : GAError(GoogleAuthErrorDenied, error.localizedDescription));
+            return;
+        }
+
+        NSURLComponents *callback = [NSURLComponents componentsWithURL:callbackURL resolvingAgainstBaseURL:NO];
+        NSString *code = nil, *returnedState = nil, *oauthError = nil;
+        for (NSURLQueryItem *item in callback.queryItems) {
+            if ([item.name isEqualToString:@"code"]) code = item.value;
+            else if ([item.name isEqualToString:@"state"]) returnedState = item.value;
+            else if ([item.name isEqualToString:@"error"]) oauthError = item.value;
+        }
+        if (oauthError.length > 0) {
+            finish(GAError(GoogleAuthErrorDenied, oauthError));
+            return;
+        }
+        if (![returnedState isEqualToString:state]) {
+            finish(GAError(GoogleAuthErrorStateMismatch, @"state mismatch"));
+            return;
+        }
+        if (code.length == 0) {
+            finish(GAError(GoogleAuthErrorNoToken, @"no authorization code"));
+            return;
+        }
+        [self exchangeCode:code verifier:verifier finish:finish];
     }];
 
     if (@available(iOS 13.0, *)) {
-        GoogleAuthPresenter *provider = [[GoogleAuthPresenter alloc] init];
-        provider.window = presenter.view.window;
-        gPresenter = provider;
-        session.presentationContextProvider = provider;
-        session.prefersEphemeralWebBrowserSession = NO;
+        session.presentationContextProvider = anchor;   // iOS 12 picks the top screen by itself
     }
-    gSession = session;
+    gAuthSession = session;
+    gAuthAnchor = anchor;
     if (![session start]) {
-        gSession = nil;
-        gPresenter = nil;
-        completion(NO, L(@"google_err_start"));
+        gAuthSession = nil;
+        gAuthAnchor = nil;
+        finish(GAError(GoogleAuthErrorNetwork, @"could not open the sign-in page"));
     }
-}
-
-+ (void)exchangeCode:(NSString *)code
-            verifier:(NSString *)verifier
-            clientID:(NSString *)clientID
-            redirect:(NSString *)redirect
-           projectID:(NSString *)projectID
-          completion:(void (^)(BOOL, NSString *))completion {
-    NSMutableURLRequest *request = FormPost(kTokenEndpoint, @{
-        @"client_id": clientID,
-        @"code": code,
-        @"code_verifier": verifier,
-        @"redirect_uri": redirect,
-        @"grant_type": @"authorization_code"
-    });
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (error != nil) { completion(NO, L(@"google_err_network")); return; }
-            id json = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-            NSDictionary *body = [json isKindOfClass:[NSDictionary class]] ? json : @{};
-            NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
-            NSString *access = [body[@"access_token"] isKindOfClass:[NSString class]] ? body[@"access_token"] : nil;
-            if (status != 200 || access.length == 0) {
-                NSString *why = body[@"error_description"] ?: body[@"error"] ?: [NSString stringWithFormat:@"HTTP %ld", (long)status];
-                [DiagnosticLog log:@"google token exchange failed: http=%ld", (long)status];
-                completion(NO, [NSString stringWithFormat:L(@"google_err_exchange"), why]);
-                return;
-            }
-            NSString *refresh = [body[@"refresh_token"] isKindOfClass:[NSString class]] ? body[@"refresh_token"] : nil;
-            if (refresh.length == 0) { completion(NO, L(@"google_err_no_refresh")); return; }
-
-            if (![KeyStore saveSecret:refresh named:kRefreshSecret]) { completion(NO, L(@"status_save_failed")); return; }
-            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-            [defaults setObject:clientID forKey:kDefClientID];
-            [defaults setObject:projectID forKey:kDefProjectID];
-            [defaults setObject:EmailFromIDToken(body[@"id_token"]) forKey:kDefEmail];
-            [defaults setBool:YES forKey:kDefSignedIn];
-            [defaults setBool:YES forKey:kDefPrefer];
-            [defaults synchronize];
-
-            double lifetime = [body[@"expires_in"] respondsToSelector:@selector(doubleValue)] ? [body[@"expires_in"] doubleValue] : 3600;
-            gAccessToken = access;
-            gAccessExpiry = [NSDate dateWithTimeIntervalSinceNow:MAX(60.0, lifetime)];
-            [KeyTier invalidateGeminiDetection];
-            [DiagnosticLog log:@"google sign-in OK"];
-            completion(YES, nil);
-        });
-    }] resume];
-}
-
-#pragma mark - Sign out
-
-+ (void)signOut {
-    NSString *refresh = [KeyStore loadSecretNamed:kRefreshSecret];
-    if (refresh.length > 0) {
-        NSMutableURLRequest *request = FormPost(kRevokeEndpoint, @{ @"token": refresh });
-        [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {}] resume];
-    }
-    [self forgetSession];
-}
-
-// Drops everything about the session on this device. The client ID and project ID stay so signing in again is quick.
-+ (void)forgetSession {
-    [KeyStore deleteSecretNamed:kRefreshSecret];
-    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setBool:NO forKey:kDefSignedIn];
-    [defaults setBool:NO forKey:kDefPrefer];
-    [defaults removeObjectForKey:kDefEmail];
-    [defaults synchronize];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        gAccessToken = nil;
-        gAccessExpiry = nil;
-    });
-    [KeyTier invalidateGeminiDetection];
-}
-
-#pragma mark - Access token
-
-+ (void)accessTokenWithCompletion:(void (^)(NSString *, NSError *))completion {
-    if (![NSThread isMainThread]) {
-        dispatch_async(dispatch_get_main_queue(), ^{ [self accessTokenWithCompletion:completion]; });
-        return;
-    }
-    if (gAccessToken.length > 0 && gAccessExpiry.timeIntervalSinceNow > 90) {
-        completion(gAccessToken, nil);
-        return;
-    }
-    if (!gWaiters) gWaiters = [NSMutableArray array];
-    [gWaiters addObject:[completion copy]];
-    if (gRefreshing) return;
-    gRefreshing = YES;
-    [self refreshAttempt:0];
-}
-
-+ (void)finishRefreshWithToken:(NSString *)token error:(NSError *)error {
-    gRefreshing = NO;
-    NSArray *waiters = [gWaiters copy];
-    [gWaiters removeAllObjects];
-    for (void (^block)(NSString *, NSError *) in waiters) block(token, error);
-}
-
-+ (void)refreshAttempt:(NSInteger)attempt {
-    NSString *refresh = [KeyStore loadSecretNamed:kRefreshSecret];
-    NSString *clientID = [self savedClientID];
-    if (![self isSignedIn] || refresh.length == 0 || clientID.length == 0) {
-        [self finishRefreshWithToken:nil error:AuthError(GoogleAuthErrorSignInRequired, L(@"google_err_expired"))];
-        return;
-    }
-    NSMutableURLRequest *request = FormPost(kTokenEndpoint, @{
-        @"client_id": clientID,
-        @"refresh_token": refresh,
-        @"grant_type": @"refresh_token"
-    });
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (error != nil) {
-                if (attempt < 1) {   // one quick retry for a network blip
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        [self refreshAttempt:attempt + 1];
-                    });
-                    return;
-                }
-                [self finishRefreshWithToken:nil error:AuthError(GoogleAuthErrorNetwork, L(@"google_err_network"))];
-                return;
-            }
-            NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
-            id json = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-            NSDictionary *body = [json isKindOfClass:[NSDictionary class]] ? json : @{};
-            NSString *access = [body[@"access_token"] isKindOfClass:[NSString class]] ? body[@"access_token"] : nil;
-
-            if (status == 200 && access.length > 0) {
-                double lifetime = [body[@"expires_in"] respondsToSelector:@selector(doubleValue)] ? [body[@"expires_in"] doubleValue] : 3600;
-                gAccessToken = access;
-                gAccessExpiry = [NSDate dateWithTimeIntervalSinceNow:MAX(60.0, lifetime)];
-                [self finishRefreshWithToken:access error:nil];
-                return;
-            }
-            NSString *code = [body[@"error"] isKindOfClass:[NSString class]] ? body[@"error"] : @"";
-            [DiagnosticLog log:@"google token refresh failed: http=%ld error=%@", (long)status, code];
-            if (status == 400 || status == 401) {
-                // invalid_grant = expired (7 days for an app still in "Testing") or revoked: a new sign-in is needed.
-                // The session stays listed (with its client ID) so the person can sign in again from the key screen
-                // without the chat being thrown away.
-                [self finishRefreshWithToken:nil error:AuthError(GoogleAuthErrorSignInRequired, L(@"google_err_expired"))];
-            } else {
-                [self finishRefreshWithToken:nil error:AuthError(GoogleAuthErrorNetwork, L(@"google_err_network"))];
-            }
-        });
-    }] resume];
-}
-
-#pragma mark - Requests
-
-+ (void)authorizeRequest:(NSMutableURLRequest *)request key:(NSString *)key completion:(void (^)(NSError *))completion {
-    if (![key isEqualToString:kGoogleOAuthKeyMarker]) {
-        [request setValue:nil forHTTPHeaderField:@"Authorization"];
-        [request setValue:nil forHTTPHeaderField:@"x-goog-user-project"];
-        [request setValue:key forHTTPHeaderField:@"x-goog-api-key"];
-        completion(nil);
-        return;
-    }
-    [self accessTokenWithCompletion:^(NSString *token, NSError *error) {
-        if (token.length == 0) { completion(error ?: AuthError(GoogleAuthErrorSignInRequired, L(@"google_err_expired"))); return; }
-        [request setValue:nil forHTTPHeaderField:@"x-goog-api-key"];
-        [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
-        NSString *project = [self savedProjectID];
-        if (project.length > 0) [request setValue:project forHTTPHeaderField:@"x-goog-user-project"];
-        completion(nil);
-    }];
-}
-
-+ (NSString *)messageForError:(NSError *)error {
-    if ([error.domain isEqualToString:GoogleAuthErrorDomain]) {
-        if (error.code == GoogleAuthErrorSignInRequired) return L(@"google_err_expired");
-        if (error.code == GoogleAuthErrorNetwork) return L(@"google_err_network");
-    }
-    return error.localizedDescription ?: L(@"google_err_network");
 }
 
 @end

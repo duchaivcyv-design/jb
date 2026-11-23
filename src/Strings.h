@@ -10,3 +10,4 @@
 #define kNotifConversationDeleted @"ClaudeMiniConversationDeleted"
 #define kNotifLanguageChanged     @"ClaudeMiniLanguageChanged"
 #define kNotifThemeChanged        @"ClaudeMiniThemeChanged"
+#define kNotifLayoutChanged       @"ClaudeMiniLayoutChanged"   // screen layout (phone / iPhone Duo) changed in Settings

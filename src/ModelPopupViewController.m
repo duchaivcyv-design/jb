@@ -6,6 +6,7 @@
 #import "Provider.h"
 #import "Strings.h"
 #import "Theme.h"
+#import "Material.h"
 
 static NSString *const kCellId = @"model";
 
@@ -51,12 +52,15 @@ static NSString *const kCellId = @"model";
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
+    self.view.backgroundColor = [UIColor clearColor];   // the blur below replaces the plain dimming
+    UIVisualEffectView *backdrop = [Theme backdropBlurView];
+    backdrop.frame = self.view.bounds;
+    [self.view addSubview:backdrop];
     self.models = [ModelStore recommendedModels];
 
     self.card = [[UIView alloc] init];
     self.card.backgroundColor = [Theme background];
-    self.card.layer.cornerRadius = 24;
+    self.card.layer.cornerRadius = MR(24, 28);
     self.card.layer.borderWidth = 1;
     self.card.layer.borderColor = [Theme border].CGColor;
     self.card.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -79,13 +83,14 @@ static NSString *const kCellId = @"model";
     [self.card addSubview:self.noteLabel];
 
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    [Material installTableEffects:self.tableView];   // Material 3 press feedback (does nothing in the Classic design)
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.backgroundColor = [Theme surface];
     self.tableView.separatorColor = [Theme border];
     self.tableView.separatorInset = UIEdgeInsetsMake(0, 68, 0, 0);
     self.tableView.tableFooterView = [[UIView alloc] init];
-    self.tableView.layer.cornerRadius = 16;
+    self.tableView.layer.cornerRadius = MR(16, 20);
     self.tableView.clipsToBounds = YES;
     self.tableView.layer.borderWidth = 1;
     self.tableView.layer.borderColor = [Theme border].CGColor;
@@ -104,7 +109,7 @@ static NSString *const kCellId = @"model";
     [self.moreButton setTitle:L(@"popup_more") forState:UIControlStateNormal];
     [self.moreButton setTitleColor:[Theme accent] forState:UIControlStateNormal];
     self.moreButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-    self.moreButton.layer.cornerRadius = 14;
+    self.moreButton.layer.cornerRadius = MR(14, 24);
     self.moreButton.layer.borderWidth = 1.5;
     self.moreButton.layer.borderColor = [Theme accent].CGColor;
     [self.moreButton addTarget:self action:@selector(moreTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -115,7 +120,7 @@ static NSString *const kCellId = @"model";
     [self.doneButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.doneButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
     self.doneButton.backgroundColor = [Theme accent];
-    self.doneButton.layer.cornerRadius = 14;
+    self.doneButton.layer.cornerRadius = MR(14, 24);
     [self.doneButton addTarget:self action:@selector(doneTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.card addSubview:self.doneButton];
 
@@ -160,10 +165,16 @@ static NSString *const kCellId = @"model";
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    if ([Material active]) { [Material presentDialogCard:self.card]; return; }
     self.card.transform = CGAffineTransformMakeScale(0.94, 0.94);
     [UIView animateWithDuration:0.28 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0 options:0 animations:^{
         self.card.transform = CGAffineTransformIdentity;
     } completion:nil];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [Material dismissDialogCard:self.card];
 }
 
 #pragma mark - Table

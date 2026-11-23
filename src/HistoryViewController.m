@@ -1,6 +1,8 @@
 #import "HistoryViewController.h"
 #import "Strings.h"
+#import "ChoicePopupViewController.h"
 #import "Theme.h"
+#import "Material.h"
 #import "ConversationStore.h"
 #import "SettingsViewController.h"
 #import "MiniNavigationController.h"
@@ -30,6 +32,7 @@
     self.navigationItem.leftBarButtonItem = back;
 
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStylePlain];
+    [Material installTableEffects:self.tableView];   // Material 3 press feedback (does nothing in the Classic design)
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -175,7 +178,7 @@
         cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
         cell.detailTextLabel.textColor = [Theme secondaryText];
         UIView *selected = [[UIView alloc] init];
-        selected.backgroundColor = [Theme selection];
+        selected.backgroundColor = [Material active] ? [UIColor clearColor] : [Theme selection];
         cell.selectedBackgroundView = selected;
     }
     NSDictionary *entry = self.entries[indexPath.row];
@@ -238,23 +241,21 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
                                               handler:^(UIContextualAction *action, UIView *sourceView, void (^completionHandler)(BOOL)) {
         HistoryViewController *me = weakSelf;
         if (!me) { completionHandler(NO); return; }
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:L(@"rename_title")
-                                                                       message:nil
-                                                                preferredStyle:UIAlertControllerStyleAlert];
+        ChoicePopupViewController *alert = [ChoicePopupViewController alertWithTitle:L(@"rename_title") message:nil];
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
             field.text = currentTitle;
             field.clearButtonMode = UITextFieldViewModeWhileEditing;
             field.autocapitalizationType = UITextAutocapitalizationTypeSentences;
         }];
-        [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
-        [alert addAction:[UIAlertAction actionWithTitle:L(@"save") style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        [alert addAction:[ChoiceAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[ChoiceAction actionWithTitle:L(@"save") style:UIAlertActionStyleDefault handler:^(id a) {
             NSString *newTitle = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             if (newTitle.length > 0) {
                 [ConversationStore renameConversationWithId:cid title:newTitle];
                 [me reloadEntries];
             }
         }]];
-        [me presentViewController:alert animated:YES completion:nil];
+        [alert presentFromViewController:me];
         completionHandler(YES);
     }];
     rename.backgroundColor = [Theme accent];

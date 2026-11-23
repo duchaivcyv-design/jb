@@ -2,6 +2,7 @@
 #import "ModelStore.h"
 #import "Provider.h"
 #import "Theme.h"
+#import "Material.h"
 
 static const CGFloat kRowHeight = 68;
 
@@ -196,7 +197,7 @@ static UIImage *CapabilityChipImage(ModelCapability capability) {
     self.backgroundColor = [Theme surface];
     self.selectionStyle = UITableViewCellSelectionStyleDefault;
     UIView *highlight = [[UIView alloc] init];
-    highlight.backgroundColor = [Theme selection];
+    highlight.backgroundColor = [Material active] ? [UIColor clearColor] : [Theme selection];
     self.selectedBackgroundView = highlight;
 
     // The provider's own logo on a soft round badge; a chosen model gets an accent ring.

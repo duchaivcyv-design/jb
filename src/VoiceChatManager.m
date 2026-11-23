@@ -1,20 +1,22 @@
 #import "VoiceChatManager.h"
+#import "Loc.h"
 #import <Speech/Speech.h>
 #import <AVFoundation/AVFoundation.h>
+#import <UIKit/UIKit.h>
 
-@interface VoiceChatManager () <SFSpeechRecognizerDelegate, AVSpeechSynthesizerDelegate>
+@interface VoiceChatManager ()
 @property (strong, nonatomic) SFSpeechRecognizer *recognizer;
 @property (strong, nonatomic) SFSpeechAudioBufferRecognitionRequest *request;
 @property (strong, nonatomic) SFSpeechRecognitionTask *task;
 @property (strong, nonatomic) AVAudioEngine *engine;
 @property (copy, nonatomic) void (^partialBlock)(NSString *);
 @property (copy, nonatomic) void (^finalBlock)(NSString *);
-@property (copy, nonatomic) void (^errorBlock)(NSString *);
-@property (copy, nonatomic) void (^speakCompletionBlock)(void);
-@property (strong, nonatomic) AVSpeechSynthesizer *synthesizer;
-@property (assign, nonatomic) BOOL recording;
-@property (assign, nonatomic) NSInteger currentVoiceIndex;
-@property (assign, nonatomic) BOOL manualVoiceSelection;
+@property (copy, nonatomic) void (^issueBlock)(VoiceDictationIssue);
+@property (copy, nonatomic) NSString *lastText;
+@property (assign, nonatomic) BOOL recording;      // the microphone is open
+@property (assign, nonatomic) BOOL active;         // a dictation session exists (also while the last words are processed)
+@property (assign, nonatomic) NSUInteger session;  // ignores callbacks of an older session
+@property (assign, nonatomic) BOOL observing;
 @end
 
 @implementation VoiceChatManager
@@ -22,269 +24,184 @@
 + (instancetype)shared {
     static VoiceChatManager *instance = nil;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        instance = [[VoiceChatManager alloc] init];
-    });
+    dispatch_once(&onceToken, ^{ instance = [[VoiceChatManager alloc] init]; });
     return instance;
 }
 
-- (instancetype)init {
-    if (self = [super init]) {
-        NSLocale *vi = [[NSLocale alloc] initWithLocaleIdentifier:@"vi-VN"];
-        _recognizer = [[SFSpeechRecognizer alloc] initWithLocale:vi];
-        if (!_recognizer) {
-            _recognizer = [[SFSpeechRecognizer alloc] initWithLocale:[NSLocale currentLocale]];
-        }
-        if (_recognizer) {
-            _recognizer.delegate = self;
-        }
-        _engine = [[AVAudioEngine alloc] init];
-        _synthesizer = [[AVSpeechSynthesizer alloc] init];
-        _synthesizer.delegate = self;
-        _currentVoiceIndex = 0;
-        _manualVoiceSelection = NO;
+- (BOOL)isRecording {
+    return self.active;
+}
+
+// Recognizer for the app language (vi / en); "auto" follows the device language.
+- (SFSpeechRecognizer *)makeRecognizer {
+    NSString *pref = [Loc preference];
+    NSMutableArray<NSString *> *candidates = [NSMutableArray array];
+    if ([pref isEqualToString:@"vi"]) [candidates addObject:@"vi-VN"];
+    else if ([pref isEqualToString:@"en"]) [candidates addObject:@"en-US"];
+    else {
+        NSString *device = [NSLocale preferredLanguages].firstObject;
+        if (device.length > 0) [candidates addObject:device];
     }
-    return self;
+    [candidates addObject:[NSLocale currentLocale].localeIdentifier ?: @"en-US"];
+    [candidates addObject:@"vi-VN"];
+    for (NSString *identifier in candidates) {
+        SFSpeechRecognizer *recognizer = [[SFSpeechRecognizer alloc] initWithLocale:[NSLocale localeWithLocaleIdentifier:identifier]];
+        if (recognizer) return recognizer;
+    }
+    return nil;
 }
 
 - (void)requestAuthorization:(void (^)(BOOL granted))completion {
+    void (^finish)(BOOL) = ^(BOOL ok) { dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(ok); }); };
     [SFSpeechRecognizer requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus status) {
-        BOOL speechOK = (status == SFSpeechRecognizerAuthorizationStatusAuthorized);
-        [[AVAudioSession sharedInstance] requestRecordPermission:^(BOOL micOK) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion(speechOK && micOK);
-            });
-        }];
+        if (status != SFSpeechRecognizerAuthorizationStatusAuthorized) { finish(NO); return; }
+        [[AVAudioSession sharedInstance] requestRecordPermission:^(BOOL micOK) { finish(micOK); }];
     }];
 }
 
-- (BOOL)isRecording {
-    return self.recording;
-}
+#pragma mark - Dictation
 
-- (BOOL)isSpeaking {
-    return self.synthesizer.isSpeaking;
-}
+- (void)startDictationWithPartial:(void (^)(NSString *))partial
+                            final:(void (^)(NSString *))final
+                            issue:(void (^)(VoiceDictationIssue))issue {
+    if (self.active) [self cancelDictation];
 
-#pragma mark - Ghi âm & Nhận dạng giọng nói (STT)
-
-- (void)startRecordingWithPartial:(void (^)(NSString *text))partial
-                            final:(void (^)(NSString *text))final
-                            error:(void (^)(NSString *message))error {
-    if (self.recording) {
-        if (error) error(@"Đang ghi âm rồi.");
+    self.recognizer = [self makeRecognizer];
+    if (!self.recognizer || !self.recognizer.isAvailable) {
+        if (issue) issue(VoiceDictationIssueUnavailable);
+        if (final) final(@"");
         return;
     }
-    [self stopSpeaking];
+    self.session++;
+    NSUInteger mySession = self.session;
     self.partialBlock = partial;
     self.finalBlock = final;
-    self.errorBlock = error;
+    self.issueBlock = issue;
+    self.lastText = @"";
+    self.active = YES;
 
     NSError *sessionError = nil;
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                    mode:AVAudioSessionModeMeasurement
-                 options:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth
-                   error:&sessionError];
-    [session setActive:YES withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&sessionError];
-
-    if (!self.engine) {
-        self.engine = [[AVAudioEngine alloc] init];
+    AVAudioSession *audio = [AVAudioSession sharedInstance];
+    [audio setCategory:AVAudioSessionCategoryRecord mode:AVAudioSessionModeMeasurement options:0 error:&sessionError];
+    [audio setActive:YES withOptions:0 error:&sessionError];
+    if (sessionError) {
+        [self endSessionReportingIssue:VoiceDictationIssueFailed];
+        return;
     }
 
+    self.engine = [[AVAudioEngine alloc] init];
     self.request = [[SFSpeechAudioBufferRecognitionRequest alloc] init];
     self.request.shouldReportPartialResults = YES;
-    if (@available(iOS 13, *)) {
-        self.request.requiresOnDeviceRecognition = NO;
-    }
+    if (@available(iOS 16.0, *)) self.request.addsPunctuation = YES;
 
     __weak typeof(self) weakSelf = self;
-    self.task = [self.recognizer recognitionTaskWithRequest:self.request resultHandler:^(SFSpeechRecognitionResult *result, NSError *err) {
-        VoiceChatManager *me = weakSelf;
-        if (!me) return;
-        BOOL isFinal = (result != nil && result.isFinal);
-        if (result) {
-            NSString *text = result.bestTranscription.formattedString ?: @"";
-            if (isFinal) {
-                if (me.finalBlock) me.finalBlock(text);
-            } else {
-                if (me.partialBlock) me.partialBlock(text);
+    self.task = [self.recognizer recognitionTaskWithRequest:self.request resultHandler:^(SFSpeechRecognitionResult *result, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            VoiceChatManager *me = weakSelf;
+            if (!me || me.session != mySession || !me.active) return;
+            if (result) {
+                NSString *text = result.bestTranscription.formattedString ?: @"";
+                me.lastText = text;
+                if (!result.isFinal && me.partialBlock) me.partialBlock(text);
+                if (result.isFinal) { [me endSessionReportingIssue:-1]; return; }
             }
-        }
-        if (err || isFinal) {
-            [me stopRecording];
-            if (err && !isFinal && me.errorBlock) {
-                me.errorBlock(err.localizedDescription ?: @"Lỗi nhận dạng giọng nói.");
+            if (error) {
+                // 1110 / 203 = nothing was heard; when some words arrived the text is simply kept
+                BOOL noSpeech = (error.code == 1110 || error.code == 203);
+                if (me.lastText.length > 0) [me endSessionReportingIssue:-1];
+                else [me endSessionReportingIssue:noSpeech ? VoiceDictationIssueNoSpeech : VoiceDictationIssueFailed];
             }
-        }
+        });
     }];
+    if (!self.task) { [self endSessionReportingIssue:VoiceDictationIssueFailed]; return; }
 
     AVAudioInputNode *node = self.engine.inputNode;
-    @try {
-        [node removeTapOnBus:0];
-    } @catch (__unused NSException *ex) {}
-    [node installTapOnBus:0 bufferSize:1024 format:nil block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
-        [weakSelf.request appendAudioPCMBuffer:buffer];
+    AVAudioFormat *format = [node outputFormatForBus:0];
+    if (format.sampleRate <= 0 || format.channelCount == 0) { [self endSessionReportingIssue:VoiceDictationIssueFailed]; return; }
+    SFSpeechAudioBufferRecognitionRequest *request = self.request;
+    [node installTapOnBus:0 bufferSize:1024 format:format block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
+        [request appendAudioPCMBuffer:buffer];   // safe to call from the audio thread
     }];
-
     [self.engine prepare];
     NSError *startError = nil;
     if (![self.engine startAndReturnError:&startError]) {
-        @try {
-            [node removeTapOnBus:0];
-        } @catch (__unused NSException *ex) {}
-        self.recording = NO;
-        if (error) error(startError.localizedDescription ?: @"Không khởi động được ghi âm.");
+        [self endSessionReportingIssue:VoiceDictationIssueFailed];
         return;
     }
     self.recording = YES;
+    [self observeInterruptions:YES];
 }
 
-- (void)stopRecording {
+// The user stopped talking: close the microphone but let the recognizer finish the last words.
+- (void)finishDictation {
+    if (!self.active) return;
+    [self closeMicrophone];
+    [self.request endAudio];
+    NSUInteger mySession = self.session;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        VoiceChatManager *me = weakSelf;
+        if (me && me.session == mySession && me.active) [me endSessionReportingIssue:-1];   // the recognizer was slow: keep what we have
+    });
+}
+
+- (void)cancelDictation {
+    if (!self.active) return;
+    [self endSessionReportingIssue:-1];
+}
+
+- (void)closeMicrophone {
+    if (!self.recording) return;
     self.recording = NO;
-    if (self.engine.isRunning) {
-        [self.engine stop];
-    }
-    @try {
-        [self.engine.inputNode removeTapOnBus:0];
-    } @catch (__unused NSException *ex) {}
+    if (self.engine.isRunning) [self.engine stop];
+    @try { [self.engine.inputNode removeTapOnBus:0]; } @catch (__unused NSException *exception) {}
+}
+
+// Ends the session once: releases audio, then reports the issue (if any) and the final text.
+- (void)endSessionReportingIssue:(NSInteger)issue {
+    if (!self.active) return;
+    self.active = NO;
+    [self observeInterruptions:NO];
+    [self closeMicrophone];
     [self.request endAudio];
     [self.task cancel];
     self.task = nil;
     self.request = nil;
+    self.engine = nil;
+    [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+
+    void (^issueBlock)(VoiceDictationIssue) = self.issueBlock;
+    void (^finalBlock)(NSString *) = self.finalBlock;
+    NSString *text = self.lastText ?: @"";
+    self.partialBlock = nil;
+    self.issueBlock = nil;
+    self.finalBlock = nil;
+    self.lastText = nil;
+    if (issue >= 0 && issueBlock) issueBlock((VoiceDictationIssue)issue);
+    if (finalBlock) finalBlock(text);
 }
 
-#pragma mark - Đọc văn bản AI bằng giọng nói (TTS)
+#pragma mark - Interruptions (a call, Siri, the app going to the background)
 
-- (void)activatePlaybackSession {
-    NSError *err = nil;
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    AVAudioSessionCategoryOptions opts = AVAudioSessionCategoryOptionDefaultToSpeaker |
-                                     AVAudioSessionCategoryOptionAllowBluetooth;
-    [session setCategory:AVAudioSessionCategoryPlayAndRecord
-                    mode:AVAudioSessionModeSpokenAudio
-                 options:opts
-                   error:&err];
-    [session setActive:YES withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:&err];
-}
-
-- (NSString *)cleanTextForSpeech:(NSString *)raw {
-    if (raw.length == 0) return @"";
-    NSString *cleaned = raw;
-    NSError *regexError = nil;
-    NSRegularExpression *codeBlockRegex = [NSRegularExpression regularExpressionWithPattern:@"```[\\s\\S]*?```" options:0 error:&regexError];
-    if (codeBlockRegex) {
-        cleaned = [codeBlockRegex stringByReplacingMatchesInString:cleaned options:0 range:NSMakeRange(0, cleaned.length) withTemplate:@" Đoạn mã nguồn. "];
-    }
-    NSRegularExpression *mdSymRegex = [NSRegularExpression regularExpressionWithPattern:@"[#*_`~>]+" options:0 error:&regexError];
-    if (mdSymRegex) {
-        cleaned = [mdSymRegex stringByReplacingMatchesInString:cleaned options:0 range:NSMakeRange(0, cleaned.length) withTemplate:@" "];
-    }
-    cleaned = [cleaned stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (cleaned.length > 4000) {
-        NSRange r = [cleaned rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, 4000)];
-        cleaned = [[cleaned substringWithRange:r] stringByAppendingString:@"... Hết phần tóm tắt."];
-    }
-    return cleaned;
-}
-
-- (void)speak:(NSString *)text voiceIndex:(NSInteger)voiceIndex completion:(void (^)(void))completion {
-    NSString *spoken = [self cleanTextForSpeech:text];
-    if (spoken.length == 0) {
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), completion);
-        }
-        return;
-    }
-
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        VoiceChatManager *me = weakSelf;
-        if (!me) return;
-        [me stopRecording];
-        [me stopSpeaking];
-        [me activatePlaybackSession];
-
-        me.speakCompletionBlock = completion;
-        NSInteger idx = ((voiceIndex % 3) + 3) % 3;
-
-        if (!me.synthesizer) {
-            me.synthesizer = [[AVSpeechSynthesizer alloc] init];
-            me.synthesizer.delegate = me;
-        }
-
-        AVSpeechUtterance *utter = [[AVSpeechUtterance alloc] initWithString:spoken];
-        NSArray<AVSpeechSynthesisVoice *> *voices = [AVSpeechSynthesisVoice speechVoices];
-        NSMutableArray<AVSpeechSynthesisVoice *> *viVoices = [NSMutableArray array];
-        for (AVSpeechSynthesisVoice *v in voices) {
-            if ([v.language hasPrefix:@"vi"]) [viVoices addObject:v];
-        }
-        if (viVoices.count > 0) {
-            utter.voice = viVoices[(NSUInteger)idx % viVoices.count];
-        } else {
-            utter.voice = [AVSpeechSynthesisVoice voiceWithLanguage:@"vi-VN"] ?: [AVSpeechSynthesisVoice voiceWithLanguage:@"en-US"];
-        }
-
-        switch (idx) {
-            case 0:
-                utter.rate = AVSpeechUtteranceDefaultSpeechRate * 1.02;
-                utter.pitchMultiplier = 1.12;
-                break;
-            case 1:
-                utter.rate = AVSpeechUtteranceDefaultSpeechRate * 0.94;
-                utter.pitchMultiplier = 0.80;
-                break;
-            default:
-                utter.rate = AVSpeechUtteranceDefaultSpeechRate * 1.10;
-                utter.pitchMultiplier = 1.25;
-                break;
-        }
-
-        [me.synthesizer speakUtterance:utter];
-    });
-}
-
-- (void)speak:(NSString *)text completion:(void (^)(void))completion {
-    NSInteger idx = self.currentVoiceIndex;
-    if (!self.manualVoiceSelection) {
-        self.currentVoiceIndex = (self.currentVoiceIndex + 1) % 3;
-    }
-    [self speak:text voiceIndex:idx completion:completion];
-}
-
-- (void)speak:(NSString *)text {
-    [self speak:text completion:nil];
-}
-
-- (void)stopSpeaking {
-    if (self.synthesizer.isSpeaking) {
-        [self.synthesizer stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
-    }
-    self.speakCompletionBlock = nil;
-}
-
-#pragma mark - AVSpeechSynthesizerDelegate
-
-- (void)speechSynthesizer:(AVSpeechSynthesizer *)synthesizer didFinishSpeechUtterance:(AVSpeechUtterance *)utterance {
-    void (^done)(void) = self.speakCompletionBlock;
-    self.speakCompletionBlock = nil;
-    if (done) {
-        dispatch_async(dispatch_get_main_queue(), done);
+- (void)observeInterruptions:(BOOL)on {
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    if (on && !self.observing) {
+        self.observing = YES;
+        [center addObserver:self selector:@selector(interrupted:) name:AVAudioSessionInterruptionNotification object:nil];
+        [center addObserver:self selector:@selector(interrupted:) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    } else if (!on && self.observing) {
+        self.observing = NO;
+        [center removeObserver:self name:AVAudioSessionInterruptionNotification object:nil];
+        [center removeObserver:self name:UIApplicationDidEnterBackgroundNotification object:nil];
     }
 }
 
-- (void)speechSynthesizer:(AVSpeechSynthesizer *)synthesizer didCancelSpeechUtterance:(AVSpeechUtterance *)utterance {
-    void (^done)(void) = self.speakCompletionBlock;
-    self.speakCompletionBlock = nil;
-    if (done) {
-        dispatch_async(dispatch_get_main_queue(), done);
+- (void)interrupted:(NSNotification *)note {
+    if ([note.name isEqualToString:AVAudioSessionInterruptionNotification]) {
+        NSUInteger type = [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+        if (type != AVAudioSessionInterruptionTypeBegan) return;
     }
-}
-
-- (void)speechRecognizer:(SFSpeechRecognizer *)recognizer availabilityDidChange:(BOOL)available {
-    if (!available && self.recording) {
-        [self stopRecording];
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{ [self cancelDictation]; });
 }
 
 @end

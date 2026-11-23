@@ -7,11 +7,10 @@
 #include <strings.h>
 #include <zlib.h>
 
-#define MAX_PART_BYTES (256u * 1024u * 1024u)   // largest uncompressed XML/entry part we will inflate
-#define MAX_TEXT_BYTES (256u * 1024u * 1024u)   // largest amount of extracted text we keep
-#define MAX_ZIP_ENTRIES 50000u
-#define MAX_SLIDES 5000
-#define MAX_RELS 8192
+#define MAX_PART_BYTES (40u * 1024u * 1024u)   // largest uncompressed XML part we will inflate
+#define MAX_TEXT_BYTES (4u * 1024u * 1024u)    // largest amount of extracted text we keep
+#define MAX_SLIDES 1000
+#define MAX_RELS 4096
 
 /* ------------------------------------------------------------------------------------------------
  * Little-endian readers
@@ -40,6 +39,7 @@ static int find_entry(const unsigned char *z, size_t n, const char *name, zip_en
     if (n < 22) return OFFICE_ERR_NOT_ZIP;
     size_t nameLen = strlen(name);
 
+    // The end-of-central-directory record sits at the very end, optionally followed by a comment (<= 65535 bytes).
     long long minPos = (long long)n - 22 - 65535;
     if (minPos < 0) minPos = 0;
     long long eocd = -1;
@@ -51,7 +51,7 @@ static int find_entry(const unsigned char *z, size_t n, const char *name, zip_en
     uint32_t total = rd16(z + eocd + 10);
     uint32_t cdSize = rd32(z + eocd + 12);
     uint32_t cdOff = rd32(z + eocd + 16);
-    if (total == 0xFFFFu || cdSize == 0xFFFFFFFFu || cdOff == 0xFFFFFFFFu) return OFFICE_ERR_UNSUPPORTED;
+    if (total == 0xFFFFu || cdSize == 0xFFFFFFFFu || cdOff == 0xFFFFFFFFu) return OFFICE_ERR_UNSUPPORTED;   // ZIP64
     if ((uint64_t)cdOff + cdSize > n) return OFFICE_ERR_NOT_ZIP;
 
     const unsigned char *p = z + cdOff;
@@ -69,7 +69,7 @@ static int find_entry(const unsigned char *z, size_t n, const char *name, zip_en
         if ((size_t)(end - p) < (size_t)46 + nl + el + cl) return OFFICE_ERR_NOT_ZIP;
 
         if (nl == nameLen && memcmp(p + 46, name, nameLen) == 0) {
-            if (flags & 1) return OFFICE_ERR_UNSUPPORTED;
+            if (flags & 1) return OFFICE_ERR_UNSUPPORTED;   // encrypted
             if (csize == 0xFFFFFFFFu || usize == 0xFFFFFFFFu || lho == 0xFFFFFFFFu) return OFFICE_ERR_UNSUPPORTED;
             out->method = method;
             out->csize = csize;
@@ -107,7 +107,7 @@ static int read_entry(const unsigned char *z, size_t n, const zip_entry *e, unsi
         s.next_in = (Bytef *)src;
         s.avail_in = e->csize;
         s.next_out = buf;
-        s.avail_out = e->usize;
+        s.avail_out = e->usize;      // output is capped at the declared size, so a lying header cannot overflow the buffer
         int rc = inflate(&s, Z_FINISH);
         size_t produced = s.total_out;
         inflateEnd(&s);
@@ -137,19 +137,16 @@ typedef struct {
     char *p;
     size_t len;
     size_t cap;
-    int overflow;
-    int failed;
+    int overflow;   // hit MAX_TEXT_BYTES: further text is dropped
+    int failed;     // out of memory
 } sb_t;
 
 static void sb_put(sb_t *b, const char *s, size_t n) {
     if (b->overflow || b->failed || n == 0) return;
     if (b->len + n > MAX_TEXT_BYTES) { b->overflow = 1; return; }
     if (b->len + n + 1 > b->cap) {
-        size_t nc = b->cap ? b->cap : 65536;
-        while (nc < b->len + n + 1) {
-            if (nc >= 4u * 1024u * 1024u) nc += 4u * 1024u * 1024u;
-            else nc *= 2;
-        }
+        size_t nc = b->cap ? b->cap : 4096;
+        while (nc < b->len + n + 1) nc *= 2;
         char *np = (char *)realloc(b->p, nc);
         if (!np) { b->failed = 1; return; }
         b->p = np;
@@ -164,6 +161,7 @@ static void sb_putc(sb_t *b, char c) {
     sb_put(b, &c, 1);
 }
 
+/* Removes `suffix` from the end of the buffer if it is there. */
 static void sb_trim_suffix(sb_t *b, const char *suffix) {
     size_t sl = strlen(suffix);
     if (b->p && b->len >= sl && memcmp(b->p + b->len - sl, suffix, sl) == 0) {
@@ -194,6 +192,7 @@ static size_t utf8_encode(uint32_t cp, char *out) {
     return 4;
 }
 
+/* Appends XML character data, decoding the five named entities and numeric references. */
 static void put_decoded(sb_t *b, const char *s, size_t n) {
     size_t i = 0;
     while (i < n) {
@@ -204,6 +203,7 @@ static void put_decoded(sb_t *b, const char *s, size_t n) {
             i = j;
             continue;
         }
+        // entity: look for ';' within a short distance
         size_t j = i + 1;
         while (j < n && j - i <= 10 && s[j] != ';') j++;
         if (j >= n || s[j] != ';') { sb_putc(b, '&'); i++; continue; }
@@ -242,6 +242,7 @@ static void put_decoded(sb_t *b, const char *s, size_t n) {
             size_t m = ok ? utf8_encode(cp, tmp) : 0;
             if (m) sb_put(b, tmp, m);
         } else {
+            // unknown entity: keep it readable
             sb_put(b, s + i, j - i + 1);
         }
         i = j + 1;
@@ -249,7 +250,7 @@ static void put_decoded(sb_t *b, const char *s, size_t n) {
 }
 
 /* ------------------------------------------------------------------------------------------------
- * Tiny XML helpers
+ * Tiny XML helpers (the Office XML we read is machine-generated and well formed)
  * ---------------------------------------------------------------------------------------------- */
 
 static int name_eq(const char *s, size_t n, const char *lit) {
@@ -257,11 +258,13 @@ static int name_eq(const char *s, size_t n, const char *lit) {
     return n == l && memcmp(s, lit, l) == 0;
 }
 
+/* Index of the next '>' at or after `from`, or len if none. */
 static size_t tag_end(const char *x, size_t len, size_t from) {
     const char *p = (const char *)memchr(x + from, '>', len - from);
     return p ? (size_t)(p - x) : len;
 }
 
+/* Index of the next occurrence of closeTag (e.g. "</w:t>") at or after `from`, or len if none. */
 static size_t find_close(const char *x, size_t len, size_t from, const char *closeTag) {
     size_t cl = strlen(closeTag);
     while (from < len) {
@@ -274,6 +277,7 @@ static size_t find_close(const char *x, size_t len, size_t from, const char *clo
     return len;
 }
 
+/* Value of attribute `attr` inside the tag text [tag, tag+tagLen), or NULL. */
 static const char *attr_value(const char *tag, size_t tagLen, const char *attr, size_t *valueLen) {
     size_t al = strlen(attr);
     for (size_t i = 1; i + al + 2 < tagLen; i++) {
@@ -291,6 +295,7 @@ static const char *attr_value(const char *tag, size_t tagLen, const char *attr, 
     return NULL;
 }
 
+/* Reads a tag starting at x[i] == '<'. Fills name range, closing/self-closing flags and the index of its '>'. */
 static int read_tag(const char *x, size_t len, size_t i, size_t *nameStart, size_t *nameLen,
                     int *closing, int *selfClosing, size_t *endIdx) {
     size_t j = i + 1;
@@ -308,8 +313,9 @@ static int read_tag(const char *x, size_t len, size_t i, size_t *nameStart, size
     return 1;
 }
 
+/* Collapses runs of 3+ newlines to 2, strips trailing spaces on lines and trims both ends. */
 static void tidy(sb_t *b) {
-    if (!b->p || b->len == 0) return;
+    if (!b->p) return;
     char *w = b->p;
     int newlines = 0;
     size_t i = 0;
@@ -329,20 +335,18 @@ static void tidy(sb_t *b) {
     while (w > b->p && (w[-1] == '\n' || w[-1] == ' ' || w[-1] == '\t')) w--;
     *w = 0;
     size_t start = 0;
-    while (w - (b->p + start) > 0 && (b->p[start] == '\n' || b->p[start] == ' ' || b->p[start] == '\t')) start++;
-    size_t finalLen = (size_t)(w - (b->p + start));
-    if (start > 0 && finalLen > 0) memmove(b->p, b->p + start, finalLen);
-    b->len = finalLen;
-    b->p[b->len] = 0;
+    while (b->p[start] == '\n' || b->p[start] == ' ' || b->p[start] == '\t') start++;
+    if (start > 0) memmove(b->p, b->p + start, (size_t)(w - b->p) - start + 1);
+    b->len = strlen(b->p);
 }
 
 /* ------------------------------------------------------------------------------------------------
- * Word & PowerPoint extractors
+ * Word: text lives in <w:t>; <w:p> ends a paragraph, <w:tab/>, <w:br/> and table cells add separators
  * ---------------------------------------------------------------------------------------------- */
 
 static void extract_docx_xml(const char *x, size_t len, sb_t *out) {
     size_t i = 0;
-    int cellDepth = 0;
+    int cellDepth = 0;   // > 0 while inside a table cell: a table row must stay on one line
     while (i < len) {
         const char *lt = (const char *)memchr(x + i, '<', len - i);
         if (!lt) break;
@@ -371,7 +375,7 @@ static void extract_docx_xml(const char *x, size_t len, sb_t *out) {
                 sb_putc(out, cellDepth > 0 ? ' ' : '\n');
             } else if (name_eq(name, nl, "w:tc")) {
                 if (cellDepth > 0) cellDepth--;
-                sb_trim_suffix(out, " ");
+                sb_trim_suffix(out, " ");   // the cell's last paragraph already added a space
                 sb_put(out, " | ", 3);
             } else if (name_eq(name, nl, "w:tr")) {
                 sb_trim_suffix(out, " | ");
@@ -381,6 +385,10 @@ static void extract_docx_xml(const char *x, size_t len, sb_t *out) {
         i = end + 1;
     }
 }
+
+/* ------------------------------------------------------------------------------------------------
+ * PowerPoint: text lives in <a:t>; <a:p> ends a paragraph
+ * ---------------------------------------------------------------------------------------------- */
 
 static void extract_slide_xml(const char *x, size_t len, sb_t *out) {
     size_t i = 0;
@@ -417,6 +425,7 @@ typedef struct {
     size_t targetLen;
 } rel_t;
 
+/* Appends one slide ("--- Slide N ---" + its text). Returns 1 if the part existed. */
 static int append_slide(const unsigned char *zip, size_t zipLen, const char *path, int number, sb_t *out) {
     unsigned char *xml = NULL;
     size_t xmlLen = 0;
@@ -430,6 +439,7 @@ static int append_slide(const unsigned char *zip, size_t zipLen, const char *pat
     return 1;
 }
 
+/* Slides in the order they are presented: presentation.xml lists relationship ids, the .rels file maps ids to parts. */
 static int append_slides_in_order(const unsigned char *zip, size_t zipLen, sb_t *out) {
     unsigned char *pres = NULL, *rels = NULL;
     size_t presLen = 0, relsLen = 0;
@@ -525,6 +535,12 @@ static char *finish(sb_t *sb, int *err) {
     return sb->p;
 }
 
+
+/* ------------------------------------------------------------------------------------------------
+ * General source/text ZIP extraction. We never write archive paths to disk: selected text entries
+ * are read directly from the in-memory archive. Limits defend against ZIP bombs and huge repos.
+ * ------------------------------------------------------------------------------------------------ */
+
 static int zip_name_contains(const unsigned char *name, size_t length, const char *needle) {
     size_t needleLen = strlen(needle);
     if (!needleLen || needleLen > length) return 0;
@@ -537,24 +553,13 @@ static int zip_name_contains(const unsigned char *name, size_t length, const cha
 static int zip_name_is_text(const unsigned char *name, size_t length) {
     if (!name || length == 0) return 0;
     if (name[length - 1] == '/') return 0;
-
-    static const char *ignoredDirs[] = {
-        "/.git/", "/node_modules/", "/Pods/", "/.svn/", "/build/", "/dist/",
-        "/.build/", "/DerivedData/", "/__pycache__/", "/.next/", "/target/", "/vendor/"
-    };
-    static const char *ignoredPrefixes[] = {
-        ".git/", "node_modules/", "Pods/", ".svn/", "build/", "dist/",
-        ".build/", "DerivedData/", "__pycache__/", ".next/", "target/", "vendor/"
-    };
-
-    for (size_t i = 0; i < sizeof ignoredDirs / sizeof ignoredDirs[0]; i++) {
-        if (zip_name_contains(name, length, ignoredDirs[i])) return 0;
-    }
-    for (size_t i = 0; i < sizeof ignoredPrefixes / sizeof ignoredPrefixes[0]; i++) {
-        size_t pl = strlen(ignoredPrefixes[i]);
-        if (length >= pl && memcmp(name, ignoredPrefixes[i], pl) == 0) return 0;
-    }
-
+    /* Ignore hidden metadata / dependency trees that add noise and can dominate the archive. */
+    if (zip_name_contains(name, length, "/.git/") || zip_name_contains(name, length, "/node_modules/") ||
+        zip_name_contains(name, length, "/Pods/") || zip_name_contains(name, length, "/.svn/") ||
+        (length >= 5 && memcmp(name, ".git/", 5) == 0) ||
+        (length >= 13 && memcmp(name, "node_modules/", 13) == 0) ||
+        (length >= 5 && memcmp(name, "Pods/", 5) == 0) ||
+        (length >= 5 && memcmp(name, ".svn/", 5) == 0)) return 0;
     size_t base = 0;
     for (size_t i = 0; i < length; i++) if (name[i] == '/') base = i + 1;
     size_t dot = length;
@@ -583,8 +588,8 @@ static int zip_name_is_text(const unsigned char *name, size_t length) {
     ext[extLen] = 0;
     static const char *allowed[] = {
         "txt","md","markdown","rst","text","json","jsonl","csv","tsv","xml","html","htm",
-        "css","scss","less","js","jsx","ts","tsx","mjs","cjs","c","m","h","mm","xm","x",
-        "hpp","hh","cc","cpp","cxx","swift","py","pyi","java","kt","kts","go","rs","rb","php",
+        "css","scss","less","js","jsx","ts","tsx","mjs","cjs","m","h","mm","hpp","hh",
+        "cc","cpp","cxx","swift","py","pyi","java","kt","kts","go","rs","rb","php",
         "sh","bash","zsh","fish","yml","yaml","toml","ini","cfg","conf","plist","sql",
         "log","gradle","properties","env","gitignore","dockerfile","makefile","cmake","vue","svelte",
         "dart","lua","r","ipynb","patch","diff","proto","graphql","gql","tf","hcl","bat","ps1",
@@ -636,13 +641,12 @@ char *office_zip_text(const unsigned char *zip, size_t zipLen, int *err) {
     if (total == 0xFFFFu || cdSize == 0xFFFFFFFFu || cdOff == 0xFFFFFFFFu) {
         *err = OFFICE_ERR_UNSUPPORTED; return NULL;
     }
-    if (total > MAX_ZIP_ENTRIES || (uint64_t)cdOff + cdSize > zipLen) { *err = OFFICE_ERR_NOT_ZIP; return NULL; }
+    if (total > 10000 || (uint64_t)cdOff + cdSize > zipLen) { *err = OFFICE_ERR_NOT_ZIP; return NULL; }
 
     sb_t output = {0};
     const unsigned char *cursor = zip + cdOff;
     const unsigned char *end = cursor + cdSize;
     int sawOversizedText = 0;
-
     for (uint32_t index = 0; index < total; index++) {
         if ((size_t)(end - cursor) < 46 || rd32(cursor) != 0x02014b50u) {
             free(output.p); *err = OFFICE_ERR_NOT_ZIP; return NULL;
@@ -659,9 +663,8 @@ char *office_zip_text(const unsigned char *zip, size_t zipLen, int *err) {
         uint32_t lho = rd32(cursor + 42);
         const unsigned char *name = cursor + 46;
         int textName = zip_name_is_text(name, nameLen);
-        if (textName && usize > MAX_PART_BYTES) sawOversizedText = 1;
-
-        int selected = !(flags & 1) && usize > 0 && usize <= MAX_PART_BYTES &&
+        if (textName && usize > MAX_TEXT_BYTES) sawOversizedText = 1;
+        int selected = !(flags & 1) && usize > 0 && usize <= MAX_TEXT_BYTES &&
                        csize != 0xFFFFFFFFu && usize != 0xFFFFFFFFu && lho != 0xFFFFFFFFu && textName;
         if (selected && output.len < MAX_TEXT_BYTES) {
             zip_entry entry;
@@ -688,11 +691,7 @@ char *office_zip_text(const unsigned char *zip, size_t zipLen, int *err) {
         *err = sawOversizedText ? OFFICE_ERR_TOO_LARGE : OFFICE_ERR_MISSING_PART;
         return NULL;
     }
-    if (output.overflow) {
-        output.overflow = 0;
-        sb_put(&output, "\n[ZIP text truncated at the safe extraction limit.]\n",
-               sizeof("\n[ZIP text truncated at the safe extraction limit.]\n") - 1);
-    }
+    if (output.overflow) { output.overflow = 0; sb_put(&output, "\n[ZIP text truncated at the safe extraction limit.]\n", sizeof("\n[ZIP text truncated at the safe extraction limit.]\n") - 1); }
     return finish(&output, err);
 }
 
@@ -723,6 +722,7 @@ char *office_pptx_text(const unsigned char *zip, size_t zipLen, int *err) {
     int slides = append_slides_in_order(zip, zipLen, &sb);
 
     if (slides == 0) {
+        // Fall back to file-name order (slide1.xml, slide2.xml, ...) if the presentation index could not be read.
         for (int n = 1; n <= MAX_SLIDES; n++) {
             char path[64];
             snprintf(path, sizeof path, "ppt/slides/slide%d.xml", n);
@@ -732,6 +732,7 @@ char *office_pptx_text(const unsigned char *zip, size_t zipLen, int *err) {
     }
     if (slides == 0) {
         free(sb.p);
+        // Distinguish "not a zip at all" from "a zip without slides".
         zip_entry probe;
         int rc = find_entry(zip, zipLen, "[Content_Types].xml", &probe);
         *err = (rc == OFFICE_ERR_NOT_ZIP || rc == OFFICE_ERR_UNSUPPORTED) ? rc : OFFICE_ERR_MISSING_PART;

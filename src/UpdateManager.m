@@ -2,6 +2,8 @@
 #import "Strings.h"
 #import "Theme.h"
 #import "DiagnosticLog.h"
+#import "DevAccess.h"
+#import "AppSettings.h"
 
 NSString *const kNotifUpdateChanged = @"ClaudeMiniUpdateChanged";
 
@@ -11,10 +13,13 @@ static NSString *const kRelaunchMarker = @"/var/mobile/Library/Caches/ClaudeMini
 
 #pragma mark - Version helpers
 
-// "0.7.3" -> @[0,7,3]
+// "0.7.3" -> @[0,7,3]; a beta revision after a dash counts as a further part: "0.7.4-1" -> @[0,7,4,1]
 static NSArray<NSNumber *> *VersionParts(NSString *version) {
     NSMutableArray *parts = [NSMutableArray array];
-    for (NSString *piece in [version componentsSeparatedByString:@"."]) [parts addObject:@([piece integerValue])];
+    for (NSString *piece in [version componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@".-"]]) {
+        if (piece.length == 0) continue;
+        [parts addObject:@([piece integerValue])];
+    }
     return parts;
 }
 
@@ -30,23 +35,42 @@ static NSComparisonResult CompareVersions(NSString *a, NSString *b) {
     return NSOrderedSame;
 }
 
-// Finds "0.7.3" and an optional build number ("-b46", "-build46", "_b46", "+46") in a tag or a file name.
+// Finds the version ("0.7.3", or "0.7.4-1" with a beta revision) and an optional CI build number in a tag or a file name:
+//   v0.7.3-b46   0.7.3-46_iphoneos-arm.deb   v0.7.4-1-b9   0.7.4-1-9_iphoneos-arm.deb   ClaudeMini_0.7.4-1.ipa
 static BOOL ParseVersion(NSString *text, NSString **version, NSInteger *build) {
     if (![text isKindOfClass:[NSString class]] || text.length == 0) return NO;
     NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"(\\d+(?:\\.\\d+){1,3})" options:0 error:nil];
     NSTextCheckingResult *m = [re firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
     if (!m) return NO;
-    if (version) *version = [text substringWithRange:[m rangeAtIndex:1]];
-    NSInteger b = 0;
+    NSString *base = [text substringWithRange:[m rangeAtIndex:1]];
+    NSInteger b = 0, revision = 0;
     NSString *rest = [text substringFromIndex:NSMaxRange(m.range)];
-    NSRegularExpression *rb = [NSRegularExpression regularExpressionWithPattern:@"^[-_+]?(?:b|build|r)[-_]?(\\d+)|^\\+(\\d+)|^-(\\d+)(?![\\d.])" options:NSRegularExpressionCaseInsensitive error:nil];
-    NSTextCheckingResult *mb = [rb firstMatchInString:rest options:0 range:NSMakeRange(0, rest.length)];
-    if (mb) {
-        for (NSUInteger i = 1; i < mb.numberOfRanges; i++) {
-            NSRange r = [mb rangeAtIndex:i];
-            if (r.location != NSNotFound) { b = [[rest substringWithRange:r] integerValue]; break; }
+    NSRange whole = NSMakeRange(0, rest.length);
+
+    // revision followed by a build: "-1-b9", "-1-9_"
+    NSRegularExpression *rRevBuild = [NSRegularExpression regularExpressionWithPattern:@"^-(\\d+)[-_+](?:b|build|r)?[-_]?(\\d+)(?!\\d|\\.\\d)" options:NSRegularExpressionCaseInsensitive error:nil];
+    NSTextCheckingResult *mrb = [rRevBuild firstMatchInString:rest options:0 range:whole];
+    if (mrb) {
+        revision = [[rest substringWithRange:[mrb rangeAtIndex:1]] integerValue];
+        b = [[rest substringWithRange:[mrb rangeAtIndex:2]] integerValue];
+    } else {
+        // revision only, in a local (non-CI) file name: "ClaudeMini_0.7.4-1.ipa"
+        NSRegularExpression *rRev = [NSRegularExpression regularExpressionWithPattern:@"^-(\\d+)(?=\\.(?:ipa|deb)(?:\\.enc)?$)" options:NSRegularExpressionCaseInsensitive error:nil];
+        NSTextCheckingResult *mr = [rRev firstMatchInString:rest options:0 range:whole];
+        if (mr) {
+            revision = [[rest substringWithRange:[mr rangeAtIndex:1]] integerValue];
+        } else {
+            NSRegularExpression *rb = [NSRegularExpression regularExpressionWithPattern:@"^[-_+]?(?:b|build|r)[-_]?(\\d+)|^\\+(\\d+)|^-(\\d+)(?![\\d.])" options:NSRegularExpressionCaseInsensitive error:nil];
+            NSTextCheckingResult *mb = [rb firstMatchInString:rest options:0 range:whole];
+            if (mb) {
+                for (NSUInteger i = 1; i < mb.numberOfRanges; i++) {
+                    NSRange r = [mb rangeAtIndex:i];
+                    if (r.location != NSNotFound) { b = [[rest substringWithRange:r] integerValue]; break; }
+                }
+            }
         }
     }
+    if (version) *version = revision > 0 ? [NSString stringWithFormat:@"%@-%ld", base, (long)revision] : base;
     if (build) *build = b;
     return YES;
 }
@@ -66,6 +90,7 @@ static NSString *SafeFileName(NSString *name) {
 
 @interface UpdateManager () <NSURLSessionDownloadDelegate>
 @property (assign, nonatomic) UpdateState state;
+@property (assign, nonatomic) BOOL devChannel;
 @property (copy, nonatomic) NSString *repo;
 @property (copy, nonatomic) NSString *currentVersion;
 @property (assign, nonatomic) NSInteger currentBuild;
@@ -180,6 +205,45 @@ static NSString *SafeFileName(NSString *name) {
     return YES;
 }
 
+#pragma mark Channel
+
+// The developer session must still be unlocked at every step (check, download, install), not only when the channel was
+// entered. If it ran out (time, background, device lock), the channel is left, the decrypted file is removed and the
+// person has to enter the password again. Returns YES when it did that.
+- (BOOL)dropLockedDevChannel {
+    if (!self.devChannel || [DevAccess shared].unlocked) return NO;
+    [self switchToDevChannel:NO];
+    [self failWithMessage:L(@"dev_err_locked")];
+    return YES;
+}
+
+- (void)switchToDevChannel:(BOOL)dev {
+    if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self switchToDevChannel:dev]; }); return; }
+    if (dev == self.devChannel) return;
+    if (dev && ![DevAccess shared].unlocked) return;
+    self.generation++;
+    [self.checkTask cancel];
+    self.checkTask = nil;
+    [self.downloadTask cancel];
+    self.downloadTask = nil;
+    self.devChannel = dev;
+    self.latestVersion = nil;
+    self.latestBuild = 0;
+    self.assetName = nil;
+    self.assetURL = nil;
+    self.assetSize = 0;
+    self.releaseNotes = nil;
+    self.progress = 0;
+    self.receivedBytes = 0;
+    self.errorMessage = nil;
+    self.promptedKey = nil;
+    // Never keep a decrypted developer build around once the channel is left.
+    if (self.downloadedPath.length > 0) [[NSFileManager defaultManager] removeItemAtPath:self.downloadedPath error:nil];
+    self.downloadedPath = nil;
+    self.state = UpdateStateIdle;
+    [[NSNotificationCenter defaultCenter] postNotificationName:kNotifUpdateChanged object:self];
+}
+
 #pragma mark Check
 
 - (NSURLSession *)apiSession {
@@ -196,12 +260,19 @@ static NSString *SafeFileName(NSString *name) {
 - (void)checkForUpdateForce:(BOOL)force {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self checkForUpdateForce:force]; }); return; }
     if (self.state == UpdateStateChecking || self.state == UpdateStateDownloading) return;
+    if (!force && self.devChannel) return;   // background checks only ever look at the normal releases
+    if (!force && ![AppSettings autoUpdateCheckEnabled]) return;   // "Tự động cập nhật" is off
     if (self.repo.length == 0) {
         [self failWithMessage:L(@"update_no_repo")];
         return;
     }
+    if (self.devChannel && ![DevAccess shared].unlocked) {
+        [self switchToDevChannel:NO];
+        [self failWithMessage:L(@"dev_err_locked")];
+        return;
+    }
     NSDate *last = [[NSUserDefaults standardUserDefaults] objectForKey:kLastCheckKey];
-    BOOL fresh = last && [[NSDate date] timeIntervalSinceDate:last] < kCheckThrottle;
+    BOOL fresh = !self.devChannel && last && [[NSDate date] timeIntervalSinceDate:last] < kCheckThrottle;
     if (!force && fresh && (self.state == UpdateStateAvailable || self.state == UpdateStateUpToDate || self.state == UpdateStateDownloaded)) return;
 
     self.generation++;
@@ -243,12 +314,17 @@ static NSString *SafeFileName(NSString *name) {
 
 // The newest release that carries a file for this install kind.
 - (NSDictionary *)bestCandidateInReleases:(NSArray *)releases kind:(UpdateInstallKind)kind {
+    BOOL dev = self.devChannel;
     NSString *ext = kind == UpdateInstallKindDEB ? @".deb" : @".ipa";
+    if (dev) ext = [ext stringByAppendingString:@".enc"];   // developer builds are encrypted
     NSDictionary *best = nil;
     for (id item in releases) {
         if (![item isKindOfClass:[NSDictionary class]]) continue;
         NSDictionary *release = item;
         if ([release[@"draft"] boolValue]) continue;
+        NSString *releaseTag = [release[@"tag_name"] isKindOfClass:[NSString class]] ? release[@"tag_name"] : @"";
+        BOOL isDevTag = [releaseTag.lowercaseString hasPrefix:@"dev-"] || [release[@"prerelease"] boolValue];
+        if (dev != isDevTag) continue;   // normal channel never sees developer builds and the other way round
         NSArray *assets = [release[@"assets"] isKindOfClass:[NSArray class]] ? release[@"assets"] : @[];
         NSDictionary *asset = nil;
         for (id a in assets) {
@@ -275,6 +351,7 @@ static NSString *SafeFileName(NSString *name) {
 
 // Fallback: .deb / .ipa files that were committed straight into the repository.
 - (void)checkRepositoryFilesKind:(UpdateInstallKind)kind generation:(NSUInteger)gen {
+    if (self.devChannel) { [self failWithMessage:L(@"update_err_nofile")]; return; }   // developer builds only come from releases
     NSString *ext = kind == UpdateInstallKindDEB ? @".deb" : @".ipa";
     NSURL *repoURL = [NSURL URLWithString:[NSString stringWithFormat:@"https://api.github.com/repos/%@", self.repo]];
     __weak typeof(self) weakSelf = self;
@@ -371,6 +448,7 @@ static NSString *SafeFileName(NSString *name) {
 - (void)startDownload {
     if (![NSThread isMainThread]) { dispatch_async(dispatch_get_main_queue(), ^{ [self startDownload]; }); return; }
     if (self.state == UpdateStateDownloading) return;
+    if ([self dropLockedDevChannel]) return;
     NSURL *url = [NSURL URLWithString:self.assetURL ?: @""];
     if (!url || ![url.scheme isEqualToString:@"https"]) { [self failWithMessage:L(@"update_err_nofile")]; return; }
     if (self.downloadedPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:self.downloadedPath]) {
@@ -423,15 +501,6 @@ static NSString *SafeFileName(NSString *name) {
     NSFileManager *fm = [NSFileManager defaultManager];
     if (status != 200) { [self failWithMessage:[NSString stringWithFormat:@"%@ (HTTP %ld)", L(@"update_err_download"), (long)status]]; return; }
 
-    // The file must really be what it claims to be, otherwise an HTML error page would be handed to the installer.
-    NSData *head = nil;
-    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:location.path];
-    if (handle) { head = [handle readDataOfLength:8]; [handle closeFile]; }
-    NSString *prefix = head.length >= 4 ? [[NSString alloc] initWithData:[head subdataWithRange:NSMakeRange(0, MIN((NSUInteger)8, head.length))] encoding:NSISOLatin1StringEncoding] : @"";
-    BOOL ok = self.installKind == UpdateInstallKindDEB ? [prefix hasPrefix:@"!<arch>"] : [prefix hasPrefix:@"PK"];
-    NSDictionary *attrs = [fm attributesOfItemAtPath:location.path error:nil];
-    if (!ok || [attrs fileSize] < 50 * 1024) { [self failWithMessage:L(@"update_err_corrupt")]; return; }
-
     NSString *folder = [self downloadFolder];
     NSError *error = nil;
     [fm removeItemAtPath:folder error:nil];   // only the newest download is kept
@@ -439,14 +508,60 @@ static NSString *SafeFileName(NSString *name) {
         [self failWithMessage:[NSString stringWithFormat:@"%@ (%@)", L(@"update_err_save"), error.localizedDescription]];
         return;
     }
-    NSString *dest = [folder stringByAppendingPathComponent:SafeFileName(self.assetName)];
-    if (![fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:dest] error:&error]) {
+    BOOL dev = self.devChannel;
+    NSString *name = SafeFileName(self.assetName);
+    if (dev && [name.lowercaseString hasSuffix:@".enc"]) name = [name substringToIndex:name.length - 4];
+    NSString *dest = [folder stringByAppendingPathComponent:name];
+    // The temporary file is deleted when this method returns, so it is moved first. A developer build stays encrypted
+    // on disk until it has been decrypted and checked in the background.
+    NSString *moved = dev ? [folder stringByAppendingPathComponent:@".dev-download.enc"] : dest;
+    if (![fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:moved] error:&error]) {
         [self failWithMessage:[NSString stringWithFormat:@"%@ (%@)", L(@"update_err_save"), error.localizedDescription]];
         return;
     }
+    NSUInteger gen = self.generation;
+    UpdateInstallKind kind = self.installKind;
+    self.downloadTask = nil;
+    if (!dev) {
+        if (![self fileLooksValid:moved kind:kind]) { [fm removeItemAtPath:moved error:nil]; [self failWithMessage:L(@"update_err_corrupt")]; return; }
+        [self finishDownloadWithPath:dest];
+        return;
+    }
+    self.progress = 1;
+    [[NSNotificationCenter defaultCenter] postNotificationName:kNotifUpdateChanged object:self];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *reason = nil;
+        BOOL ok = [[DevAccess shared] decryptFileAtPath:moved toPath:dest reason:&reason];
+        [[NSFileManager defaultManager] removeItemAtPath:moved error:nil];   // the encrypted copy is not needed any more
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UpdateManager *me = weakSelf;
+            if (!me || gen != me.generation || !me.devChannel) { [[NSFileManager defaultManager] removeItemAtPath:dest error:nil]; return; }
+            if (!ok) {
+                [DiagnosticLog log:@"update: developer build rejected (%@)", reason];
+                [me failWithMessage:L(@"dev_err_decrypt")];
+                return;
+            }
+            if (![me fileLooksValid:dest kind:kind]) { [[NSFileManager defaultManager] removeItemAtPath:dest error:nil]; [me failWithMessage:L(@"update_err_corrupt")]; return; }
+            [me finishDownloadWithPath:dest];
+        });
+    });
+}
+
+// The file must really be what it claims to be, otherwise an HTML error page would be handed to the installer.
+- (BOOL)fileLooksValid:(NSString *)path kind:(UpdateInstallKind)kind {
+    NSData *head = nil;
+    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
+    if (handle) { head = [handle readDataOfLength:8]; [handle closeFile]; }
+    NSString *prefix = head.length >= 4 ? [[NSString alloc] initWithData:head encoding:NSISOLatin1StringEncoding] : @"";
+    BOOL ok = kind == UpdateInstallKindDEB ? [prefix hasPrefix:@"!<arch>"] : [prefix hasPrefix:@"PK"];
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    return ok && [attrs fileSize] >= 50 * 1024;
+}
+
+- (void)finishDownloadWithPath:(NSString *)dest {
     self.downloadedPath = dest;
     self.progress = 1;
-    self.downloadTask = nil;
     self.state = UpdateStateDownloaded;
     [[NSNotificationCenter defaultCenter] postNotificationName:kNotifUpdateChanged object:self];
 }
@@ -461,6 +576,7 @@ static NSString *SafeFileName(NSString *name) {
 #pragma mark Install
 
 - (void)installFromViewController:(UIViewController *)from anchor:(UIView *)anchor {
+    if ([self dropLockedDevChannel]) return;
     if (self.downloadedPath.length == 0 || ![[NSFileManager defaultManager] fileExistsAtPath:self.downloadedPath]) {
         [self failWithMessage:L(@"update_err_nofile")];
         return;
@@ -491,6 +607,7 @@ static NSString *SafeFileName(NSString *name) {
 }
 
 - (void)presentOpenInFromViewController:(UIViewController *)from anchor:(UIView *)anchor {
+    if ([self dropLockedDevChannel]) return;
     if (self.downloadedPath.length == 0) return;
     UIView *host = anchor ?: from.view;
     if (!host.window) return;

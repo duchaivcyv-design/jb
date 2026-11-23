@@ -1,6 +1,7 @@
 #import "ModelPickerViewController.h"
 #import "Strings.h"
 #import "Theme.h"
+#import "Material.h"
 #import "KeyStore.h"
 #import "GeminiClient.h"
 #import "ClaudeClient.h"
@@ -38,6 +39,7 @@
     self.navigationItem.rightBarButtonItem = refreshItem;
 
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleGrouped];
+    [Material installTableEffects:self.tableView];   // Material 3 press feedback (does nothing in the Classic design)
     self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
@@ -76,7 +78,7 @@
     CGSize size = [label sizeThatFits:CGSizeMake(width - 32 - 28, CGFLOAT_MAX)];
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(16, 14, width - 32, ceil(size.height) + 24)];
     box.backgroundColor = [[Theme accent] colorWithAlphaComponent:0.12];
-    box.layer.cornerRadius = 14;
+    box.layer.cornerRadius = MR(14, 20);
     box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     label.frame = CGRectMake(14, 12, box.bounds.size.width - 28, ceil(size.height));
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -218,11 +220,19 @@
 #pragma mark - UITableViewDelegate
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) ((UITableViewHeaderFooterView *)view).textLabel.textColor = [Theme secondaryText];
+    if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
+        UILabel *label = ((UITableViewHeaderFooterView *)view).textLabel;
+        label.textColor = [Theme secondaryText];
+        label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];   // UIKit makes this label itself, so the app font is set here
+    }
 }
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
-    if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) ((UITableViewHeaderFooterView *)view).textLabel.textColor = [Theme secondaryText];
+    if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
+        UILabel *label = ((UITableViewHeaderFooterView *)view).textLabel;
+        label.textColor = [Theme secondaryText];
+        label.font = [UIFont systemFontOfSize:13];   // UIKit makes this label itself, so the app font is set here
+    }
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {

@@ -2,6 +2,54 @@
 #import "Theme.h"
 #import "Strings.h"
 #import "AppSettings.h"
+#import "Material.h"
+
+// Material 3 "shared axis" (X) transition between two screens: the new screen slides in 30 pt along the axis while it
+// fades in (emphasized decelerate, 400 ms); the old one slides out 30 pt the other way while it fades out faster
+// (emphasized accelerate, 200 ms). A pop runs the same motion backwards.
+@interface MaterialSharedAxisAnimator : NSObject <UIViewControllerAnimatedTransitioning>
+@property (assign, nonatomic) BOOL pushing;
+@end
+
+@implementation MaterialSharedAxisAnimator
+
+- (NSTimeInterval)transitionDuration:(id<UIViewControllerContextTransitioning>)transitionContext { return MaterialDurationMedium4; }
+
+- (void)animateTransition:(id<UIViewControllerContextTransitioning>)context {
+    UIView *container = context.containerView;
+    UIViewController *fromController = [context viewControllerForKey:UITransitionContextFromViewControllerKey];
+    UIViewController *toController = [context viewControllerForKey:UITransitionContextToViewControllerKey];
+    UIView *fromView = [context viewForKey:UITransitionContextFromViewKey] ?: fromController.view;
+    UIView *toView = [context viewForKey:UITransitionContextToViewKey] ?: toController.view;
+    if (!fromView || !toView) { [context completeTransition:![context transitionWasCancelled]]; return; }
+
+    CGFloat shift = 30;
+    CGFloat inFrom = self.pushing ? shift : -shift;    // where the new screen starts
+    CGFloat outTo = self.pushing ? -shift : shift;     // where the old screen goes
+
+    container.backgroundColor = [Theme background];     // nothing dark shows through while both screens are partly transparent
+    toView.frame = [context finalFrameForViewController:toController];
+    if (toView.superview != container) [container addSubview:toView];
+    toView.alpha = 0;
+    toView.transform = CGAffineTransformMakeTranslation(inFrom, 0);
+
+    [Material animateEmphasizedAccelerate:MaterialDurationShort4 animations:^{
+        fromView.alpha = 0;
+        fromView.transform = CGAffineTransformMakeTranslation(outTo, 0);
+    } completion:nil];
+    [Material animateEmphasizedDecelerate:MaterialDurationMedium4 animations:^{
+        toView.alpha = 1;
+        toView.transform = CGAffineTransformIdentity;
+    } completion:^(BOOL finished) {
+        fromView.alpha = 1;                             // the old screen is reused when the user comes back
+        fromView.transform = CGAffineTransformIdentity;
+        toView.alpha = 1;
+        toView.transform = CGAffineTransformIdentity;
+        [context completeTransition:![context transitionWasCancelled]];
+    }];
+}
+
+@end
 
 @interface MiniNavigationController ()
 @property (assign, nonatomic) BOOL transitioning;
@@ -53,6 +101,19 @@
     [self applyPendingBarStyle];
 }
 
+#pragma mark - Material 3 transitions
+
+// Taps on "back" and pushes use the shared axis transition. An edge swipe that is in progress keeps UIKit's own
+// interactive pop (a custom animator would take the finger tracking away).
+- (id<UIViewControllerAnimatedTransitioning>)navigationController:(UINavigationController *)navigationController animationControllerForOperation:(UINavigationControllerOperation)operation fromViewController:(UIViewController *)fromVC toViewController:(UIViewController *)toVC {
+    if (![Material active] || [Material reduceMotion] || operation == UINavigationControllerOperationNone) return nil;
+    UIGestureRecognizerState swipe = self.interactivePopGestureRecognizer.state;
+    if (operation == UINavigationControllerOperationPop && (swipe == UIGestureRecognizerStateBegan || swipe == UIGestureRecognizerStateChanged)) return nil;
+    MaterialSharedAxisAnimator *animator = [[MaterialSharedAxisAnimator alloc] init];
+    animator.pushing = (operation == UINavigationControllerOperationPush);
+    return animator;
+}
+
 #pragma mark - Safe pushes
 
 - (void)pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
@@ -86,7 +147,7 @@
 }
 
 - (void)applyPendingBarStyle {
-    NSString *signature = [NSString stringWithFormat:@"%ld|%d|%ld", (long)[Theme skin], [Theme darkMode] ? 1 : 0, (long)[AppSettings fontStyle]];
+    NSString *signature = [NSString stringWithFormat:@"%ld|%d|%ld|%ld|%d|%@", (long)[Theme skin], [Theme darkMode] ? 1 : 0, (long)[AppSettings fontStyle], (long)[AppSettings fontWeightStep], [Theme materialDesign] ? 1 : 0, [Theme signature]];
     if ([signature isEqualToString:self.barSignature]) return;   // e.g. only the wallpaper changed
     self.barSignature = signature;
     [Theme styleNavigationBar:self.navigationBar];

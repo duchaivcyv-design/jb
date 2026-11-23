@@ -2,6 +2,7 @@
 #import "UpdateManager.h"
 #import "Strings.h"
 #import "Theme.h"
+#import "Material.h"
 
 // Down-pointing arrow over a tray, drawn with code (template image, tinted by the caller).
 static UIImage *DrawUpdateIcon(CGFloat size) {
@@ -61,11 +62,15 @@ static NSString *SizeText(long long bytes) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
+    // The same blur as behind the chat history list.
+    self.view.backgroundColor = [UIColor clearColor];
+    UIVisualEffectView *blur = [Theme backdropBlurView];
+    blur.frame = self.view.bounds;
+    [self.view addSubview:blur];
 
     self.card = [[UIView alloc] init];
     self.card.backgroundColor = [Theme background];
-    self.card.layer.cornerRadius = 24;
+    self.card.layer.cornerRadius = MR(24, 28);
     self.card.layer.borderWidth = 1;
     self.card.layer.borderColor = [Theme border].CGColor;
     self.card.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -111,7 +116,7 @@ static NSString *SizeText(long long bytes) {
     self.secondaryButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     self.secondaryButton.titleLabel.adjustsFontSizeToFitWidth = YES;
     self.secondaryButton.titleLabel.minimumScaleFactor = 0.8;
-    self.secondaryButton.layer.cornerRadius = 14;
+    self.secondaryButton.layer.cornerRadius = MR(14, 24);
     self.secondaryButton.layer.borderWidth = 1.5;
     self.secondaryButton.layer.borderColor = [Theme accent].CGColor;
     [self.secondaryButton addTarget:self action:@selector(secondaryTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -123,7 +128,7 @@ static NSString *SizeText(long long bytes) {
     self.primaryButton.titleLabel.adjustsFontSizeToFitWidth = YES;
     self.primaryButton.titleLabel.minimumScaleFactor = 0.8;
     self.primaryButton.backgroundColor = [Theme accent];
-    self.primaryButton.layer.cornerRadius = 14;
+    self.primaryButton.layer.cornerRadius = MR(14, 24);
     [self.primaryButton addTarget:self action:@selector(primaryTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.card addSubview:self.primaryButton];
 
@@ -141,10 +146,16 @@ static NSString *SizeText(long long bytes) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    if ([Material active]) { [Material presentDialogCard:self.card]; return; }
     self.card.transform = CGAffineTransformMakeScale(0.94, 0.94);
     [UIView animateWithDuration:0.28 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0 options:0 animations:^{
         self.card.transform = CGAffineTransformIdentity;
     } completion:nil];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [Material dismissDialogCard:self.card];
 }
 
 #pragma mark - State
@@ -158,28 +169,23 @@ static NSString *SizeText(long long bytes) {
     UpdateManager *m = [UpdateManager shared];
     NSString *title = @"", *message = @"";
     NSString *primary = nil, *secondary = nil;
-    __weak typeof(self) weakSelf = self;
-    void (^close)(void) = ^{ [weakSelf closeTapped]; };
-    void (^primaryHandler)(void) = close;
-    void (^secondaryHandler)(void) = close;
+    NSInteger primaryCode = 0, secondaryCode = 0;   // what the buttons do, see handlerForCode:
     BOOL progress = NO;
     NSString *kind = m.installKindName;
 
     switch (m.state) {
-        case UpdateStateChecking: {
-            title = L(@"update_checking");
-            message = L(@"update_checking_msg");
+        case UpdateStateChecking:
+            title = L(m.devChannel ? @"dev_checking" : @"update_checking");
+            message = m.devChannel ? @"" : L(@"update_checking_msg");
             primary = L(@"update_close");
             break;
-        }
-        case UpdateStateUpToDate: {
+        case UpdateStateUpToDate:
             title = L(@"update_uptodate");
             message = [NSString stringWithFormat:L(@"update_uptodate_msg"), m.currentVersion];
             primary = L(@"update_close");
             secondary = L(@"update_check_again");
-            secondaryHandler = ^{ [weakSelf checkAgainTapped]; };
+            secondaryCode = 1;
             break;
-        }
         case UpdateStateAvailable: {
             title = L(@"update_available");
             NSMutableString *text = [NSMutableString stringWithFormat:@"%@  →  %@", m.currentVersion, m.latestLabel];
@@ -188,7 +194,7 @@ static NSString *SizeText(long long bytes) {
             if (m.releaseNotes.length > 0) [text appendFormat:@"\n\n%@", m.releaseNotes];
             message = text;
             primary = L(@"update_now");
-            primaryHandler = ^{ [weakSelf downloadTapped]; };
+            primaryCode = 2;
             secondary = L(@"update_later");
             break;
         }
@@ -199,10 +205,10 @@ static NSString *SizeText(long long bytes) {
                        size.length > 0 ? [NSString stringWithFormat:@" · %@ / %@", SizeText(m.receivedBytes), size] : @""];
             progress = YES;
             primary = L(@"update_cancel");
-            primaryHandler = ^{ [weakSelf cancelTapped]; };
+            primaryCode = 3;
             break;
         }
-        case UpdateStateDownloaded: {
+        case UpdateStateDownloaded:
             title = L(@"update_downloaded");
             if (m.installKind == UpdateInstallKindIPA) {
                 message = L(@"update_ipa_msg");
@@ -213,30 +219,28 @@ static NSString *SizeText(long long bytes) {
                 primary = L(@"update_install_now");
                 secondary = L(@"update_later");
             }
-            primaryHandler = ^{ [weakSelf installTapped]; };
-            if (m.installKind == UpdateInstallKindIPA) secondaryHandler = ^{ [weakSelf openInTapped]; };
+            primaryCode = 4;
+            if (m.installKind == UpdateInstallKindIPA) secondaryCode = 5;
             break;
-        }
-        case UpdateStateFailed: {
+        case UpdateStateFailed:
             title = L(@"update_failed");
             message = m.errorMessage.length > 0 ? m.errorMessage : L(@"update_err_network");
             primary = L(@"update_retry");
-            primaryHandler = ^{ [weakSelf retryTapped]; };
+            primaryCode = 6;
             secondary = L(@"update_close");
             break;
-        }
-        default: {
+        default:
             title = L(@"update_checking");
             primary = L(@"update_close");
             break;
-        }
     }
+    if (m.devChannel && m.state != UpdateStateChecking) message = [NSString stringWithFormat:@"%@\n\n%@", L(@"dev_badge"), message ?: @""];
     self.titleLabel.text = title;
     self.messageLabel.text = message;
     [self.primaryButton setTitle:primary forState:UIControlStateNormal];
     [self.secondaryButton setTitle:secondary forState:UIControlStateNormal];
-    self.primaryHandler = primaryHandler;
-    self.secondaryHandler = secondaryHandler;
+    self.primaryHandler = [self handlerForCode:primaryCode];
+    self.secondaryHandler = [self handlerForCode:secondaryCode];
     self.showsPrimary = primary.length > 0;
     self.showsSecondary = secondary.length > 0;
     BOOL progressChanged = self.showsProgress != progress;
@@ -244,6 +248,20 @@ static NSString *SizeText(long long bytes) {
     // Only a change of layout (not every progress tick) needs a new layout pass.
     if (progressChanged || m.state != UpdateStateDownloading) [self.view setNeedsLayout];
     [self updateProgressFill];
+}
+
+// 0 close, 1 check again, 2 download, 3 cancel download, 4 install, 5 open with..., 6 retry
+- (void (^)(void))handlerForCode:(NSInteger)code {
+    __weak typeof(self) weakSelf = self;
+    switch (code) {
+        case 1: return ^{ [weakSelf checkAgainTapped]; };
+        case 2: return ^{ [weakSelf downloadTapped]; };
+        case 3: return ^{ [weakSelf cancelTapped]; };
+        case 4: return ^{ [weakSelf installTapped]; };
+        case 5: return ^{ [weakSelf openInTapped]; };
+        case 6: return ^{ [weakSelf retryTapped]; };
+        default: return ^{ [weakSelf closeTapped]; };
+    }
 }
 
 - (void)updateProgressFill {
@@ -313,7 +331,8 @@ static NSString *SizeText(long long bytes) {
 }
 
 - (void)closeTapped {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    // Leaving the screen also leaves the developer channel: the decrypted build is removed and the normal state is back.
+    [self dismissViewControllerAnimated:YES completion:^{ [[UpdateManager shared] switchToDevChannel:NO]; }];
 }
 
 - (void)checkAgainTapped {

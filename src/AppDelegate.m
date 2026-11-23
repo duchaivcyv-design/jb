@@ -2,11 +2,14 @@
 #import "RootViewController.h"
 #import "ChatViewController.h"
 #import "KeyStore.h"
+#import "GoogleAuth.h"
 #import "Strings.h"
 #import "Theme.h"
 #import "DiagnosticLog.h"
 #import "MiniNavigationController.h"
 #import "UpdateManager.h"
+#import "InstructionFile.h"
+#import "AppSettings.h"
 
 @interface AppDelegate ()
 @property (assign, nonatomic) BOOL showingMain;
@@ -33,6 +36,11 @@
                                                  name:kNotifLanguageChanged
                                                object:nil];
 
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(layoutModeChanged)
+                                                 name:kNotifLayoutChanged
+                                               object:nil];
+
     [NSTimer scheduledTimerWithTimeInterval:60 target:self selector:@selector(autoThemeTick) userInfo:nil repeats:YES];
 
     [self applyKeyState];
@@ -40,6 +48,29 @@
     // Look for a new version a few seconds after launch (the result only shows as a dot on the cog and in Settings).
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[UpdateManager shared] checkForUpdateForce:NO];
+    });
+    return YES;
+}
+
+// Which orientations the app may use follows the layout chosen in Settings (phone = portrait only).
+- (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
+    return [AppSettings allowedOrientations];
+}
+
+// Phone layout chosen while the device is on its side: bring it back upright. Otherwise let iOS pick up the new allowance.
+- (void)layoutModeChanged {
+    if ([AppSettings layoutMode] == 1 && UIInterfaceOrientationIsLandscape([UIApplication sharedApplication].statusBarOrientation)) {
+        [[UIDevice currentDevice] setValue:@(UIInterfaceOrientationPortrait) forKey:@"orientation"];
+    }
+    [UIViewController attemptRotationToDeviceOrientation];
+}
+
+// A .clmn instruction file opened with ClaudeMini (Files, share sheet, AirDrop): its text goes into the AI instructions.
+- (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey, id> *)options {
+    if (!url.isFileURL) return NO;
+    // The screens may still be building when the app is launched by the file: give them a moment.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [InstructionFile handleOpenedURL:url];
     });
     return YES;
 }
@@ -56,6 +87,7 @@
 
 // Auto dark mode follows the device clock: check when the app comes back and once a minute while it is open.
 - (void)applicationDidBecomeActive:(UIApplication *)application {
+    [GoogleAuth refreshIfNeeded];   // keeps the Google access token fresh after the app sat in the background
     [self autoThemeTick];
 }
 

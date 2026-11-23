@@ -14,7 +14,12 @@ static NSString *const kDailyDateKey = @"dailyTokenUsageDate";
 static NSString *const kDailyBudgetKey = @"dailyTokenBudget";
 static NSString *const kUiScaleKey = @"uiScale";
 static NSString *const kFontStyleKey = @"fontStyle";
+static NSString *const kFontWeightKey = @"fontWeightStep";
 static NSString *const kVoiceAutoPlayKey = @"voiceAutoPlay";
+static NSString *const kAutoUpdateKey = @"autoUpdateCheck";
+static NSString *const kLayoutModeKey = @"layoutMode";
+static NSString *const kDuoSidebarSizeKey = @"duoSidebarSize";
+static NSString *const kDuoSidebarCollapsedKey = @"duoSidebarCollapsed";
 
 static NSString *gPromptTextCache = nil;
 static BOOL gPromptTextCacheLoaded = NO;
@@ -229,9 +234,9 @@ static NSArray<NSDictionary *> *PromptChunkRecords(NSString *prompt) {
 
 + (NSInteger)attachmentMemory {
     NSNumber *value = [[NSUserDefaults standardUserDefaults] objectForKey:kAttachmentMemoryKey];
-    if (![value isKindOfClass:[NSNumber class]]) return 3;
+    if (![value isKindOfClass:[NSNumber class]]) return 1;   // default: only the latest message's media is resent
     NSInteger count = value.integerValue;
-    return (count == 0 || count == 1 || count == 3) ? count : 3;
+    return (count == 0 || count == 1 || count == 3) ? count : 1;
 }
 + (void)setAttachmentMemory:(NSInteger)count {
     if (count != 0 && count != 1 && count != 3) count = 3;
@@ -245,20 +250,34 @@ static NSArray<NSDictionary *> *PromptChunkRecords(NSString *prompt) {
     if (count != 0 && count != 2048 && count != 4096 && count != 8192 && count != 16384 && count != 32768 && count != 65536 && count != 128000) count = 0;
     [[NSUserDefaults standardUserDefaults] setInteger:count forKey:kMaxOutputTokensKey];
 }
+// Short default: every request sends this much history, so a long chat must not resend millions of characters.
+static const NSUInteger kDefaultContextLimitChars = 200000;
+static NSString *const kContextLimitMigratedKey = @"contextLimitMigratedV2";
+
 + (NSUInteger)contextLimitChars {
-    NSInteger value = [[NSUserDefaults standardUserDefaults] integerForKey:kContextLimitCharsKey];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if (![defaults boolForKey:kContextLimitMigratedKey]) {
+        // Earlier builds stored 10 million here for every option (the short options were rejected). Reset once.
+        [defaults setInteger:(NSInteger)kDefaultContextLimitChars forKey:kContextLimitCharsKey];
+        [defaults setBool:YES forKey:kContextLimitMigratedKey];
+    }
+    NSInteger value = [defaults integerForKey:kContextLimitCharsKey];
     switch (value) {
+        case 100000: case 200000: case 400000: case 600000:
         case 1000000: case 5000000: case 10000000: case 25000000: case 50000000: case 100000000:
             return (NSUInteger)value;
-        default: return 10000000;
+        default: return kDefaultContextLimitChars;
     }
 }
 + (void)setContextLimitChars:(NSUInteger)count {
     switch (count) {
+        case 100000: case 200000: case 400000: case 600000:
         case 1000000: case 5000000: case 10000000: case 25000000: case 50000000: case 100000000: break;
-        default: count = 10000000; break;
+        default: count = kDefaultContextLimitChars; break;
     }
-    [[NSUserDefaults standardUserDefaults] setInteger:(NSInteger)count forKey:kContextLimitCharsKey];
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setInteger:(NSInteger)count forKey:kContextLimitCharsKey];
+    [defaults setBool:YES forKey:kContextLimitMigratedKey];   // a deliberate choice must not be reset by the migration
 }
 
 + (AIReasoningLevel)reasoningLevel {
@@ -271,7 +290,11 @@ static NSArray<NSDictionary *> *PromptChunkRecords(NSString *prompt) {
 }
 + (BOOL)fastModeEnabled { return [[NSUserDefaults standardUserDefaults] boolForKey:kFastModeKey]; }
 + (void)setFastModeEnabled:(BOOL)enabled { [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFastModeKey]; }
-+ (BOOL)webSearchEnabled { return [[NSUserDefaults standardUserDefaults] boolForKey:kWebSearchKey]; }
++ (BOOL)webSearchEnabled {
+    // On by default: answers about recent or verifiable facts come from the web. Turn it off in the tools menu.
+    if ([[NSUserDefaults standardUserDefaults] objectForKey:kWebSearchKey] == nil) return YES;
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kWebSearchKey];
+}
 + (void)setWebSearchEnabled:(BOOL)enabled { [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWebSearchKey]; }
 
 + (CGFloat)uiScale {
@@ -286,13 +309,71 @@ static NSArray<NSDictionary *> *PromptChunkRecords(NSString *prompt) {
     [[NSNotificationCenter defaultCenter] postNotificationName:@"UIScaleDidChangeNotification" object:nil userInfo:@{@"uiScale": @(scale)}];
 }
 
++ (BOOL)autoUpdateCheckEnabled {
+    id v = [[NSUserDefaults standardUserDefaults] objectForKey:kAutoUpdateKey];
+    return v ? [v boolValue] : YES;
+}
++ (void)setAutoUpdateCheckEnabled:(BOOL)enabled { [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kAutoUpdateKey]; }
+
++ (NSInteger)layoutMode {
+    NSInteger mode = [[NSUserDefaults standardUserDefaults] integerForKey:kLayoutModeKey];
+    return (mode >= 0 && mode <= 2) ? mode : 0;
+}
++ (void)setLayoutMode:(NSInteger)mode {
+    [[NSUserDefaults standardUserDefaults] setInteger:(mode >= 0 && mode <= 2) ? mode : 0 forKey:kLayoutModeKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ClaudeMiniLayoutChanged" object:nil];
+}
+
++ (NSInteger)duoSidebarSize {
+    id value = [[NSUserDefaults standardUserDefaults] objectForKey:kDuoSidebarSizeKey];
+    NSInteger size = value ? [value integerValue] : 1;
+    return (size >= 0 && size <= 2) ? size : 1;
+}
++ (void)setDuoSidebarSize:(NSInteger)size {
+    [[NSUserDefaults standardUserDefaults] setInteger:(size >= 0 && size <= 2) ? size : 1 forKey:kDuoSidebarSizeKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"ClaudeMiniLayoutChanged" object:nil];
+}
++ (CGFloat)duoSidebarBaseWidth {
+    switch ([self duoSidebarSize]) {
+        case 0: return 260;
+        case 2: return 380;
+        default: return 320;
+    }
+}
+
++ (BOOL)duoSidebarCollapsed { return [[NSUserDefaults standardUserDefaults] boolForKey:kDuoSidebarCollapsedKey]; }
++ (void)setDuoSidebarCollapsed:(BOOL)collapsed { [[NSUserDefaults standardUserDefaults] setBool:collapsed forKey:kDuoSidebarCollapsedKey]; }
+
++ (BOOL)duoActiveForSize:(CGSize)size {
+    switch ([self layoutMode]) {
+        case 1: return NO;
+        case 2: return size.width >= 520 && size.width > size.height;   // iPhone Duo: any landscape screen
+        default: return size.width >= 700 && size.height >= 500;         // automatic: only a really wide screen (tablet, Duo)
+    }
+}
+
+// Phone mode keeps the app upright; the other modes also allow landscape (never upside down).
++ (UIInterfaceOrientationMask)allowedOrientations {
+    return [self layoutMode] == 1 ? UIInterfaceOrientationMaskPortrait : UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
 + (NSInteger)fontStyle {
-    return [[NSUserDefaults standardUserDefaults] integerForKey:kFontStyleKey] == 1 ? 1 : 0;
+    NSInteger style = [[NSUserDefaults standardUserDefaults] integerForKey:kFontStyleKey];
+    return (style == 1 || style == 2) ? style : 0;
 }
 + (void)setFontStyle:(NSInteger)style {
-    NSInteger norm = (style == 1 ? 1 : 0);
+    NSInteger norm = (style == 1 || style == 2) ? style : 0;
     [[NSUserDefaults standardUserDefaults] setInteger:norm forKey:kFontStyleKey];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"UIScaleDidChangeNotification" object:nil userInfo:@{@"fontStyle": @(norm)}];
+}
++ (NSInteger)fontWeightStep {
+    NSInteger step = [[NSUserDefaults standardUserDefaults] integerForKey:kFontWeightKey];
+    return MAX(-3, MIN(3, step));
+}
++ (void)setFontWeightStep:(NSInteger)step {
+    NSInteger norm = MAX(-3, MIN(3, step));
+    [[NSUserDefaults standardUserDefaults] setInteger:norm forKey:kFontWeightKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"UIScaleDidChangeNotification" object:nil userInfo:@{@"fontWeight": @(norm)}];
 }
 
 + (BOOL)voiceAutoPlayEnabled { id v = [[NSUserDefaults standardUserDefaults] objectForKey:kVoiceAutoPlayKey]; return v ? [v boolValue] : YES; }

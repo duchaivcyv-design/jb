@@ -29,6 +29,7 @@ typedef NS_ENUM(NSInteger, ThemeSkin) {
 + (UIColor *)error;
 + (UIColor *)selection;       // highlighted table row
 
++ (UIColor *)onAccent;        // text colour that reads well on the accent (white, or near-black on a light accent)
 + (UIFont *)serifFontOfSize:(CGFloat)size;           // Georgia, falls back to system font
 + (UIImage *)imageWithColor:(UIColor *)color;        // 1x1 stretchable image for button states
 
@@ -54,6 +55,7 @@ typedef NS_ENUM(NSInteger, ThemeSkin) {
 
 + (ThemeSkin)skin;
 + (void)setSkin:(ThemeSkin)skin;                     // does not post a notification: call +postChange
++ (UIVisualEffectView *)backdropBlurView;               // the blurred backdrop behind every pop-up (same blur as behind the chat history list)
 + (BOOL)darkMode;                                    // what is shown now (follows the clock when auto mode is on)
 + (void)setDarkMode:(BOOL)dark;                      // the manual choice
 + (BOOL)autoMode;                                    // YES = dark from 18:00 to 05:59 by the device clock
@@ -79,10 +81,33 @@ typedef NS_ENUM(NSInteger, ThemeSkin) {
 
 + (UIKeyboardAppearance)keyboardAppearance;
 
+#pragma mark - Custom accent colour (hue / saturation / brightness picked by the user)
+
+// While active it replaces the accent of the skin and tints the whole palette (backgrounds, cards, borders).
++ (BOOL)customAccentActive;
++ (void)getCustomHue:(CGFloat *)hue saturation:(CGFloat *)saturation brightness:(CGFloat *)brightness;   // the picked values, or the skin accent's when none is picked
++ (void)setCustomHue:(CGFloat)hue saturation:(CGFloat)saturation brightness:(CGFloat)brightness;         // does not post a notification
++ (void)resetCustomAccent;                                                                              // back to the accent of the skin
++ (UIColor *)colorWithHue:(CGFloat)hue saturation:(CGFloat)saturation brightness:(CGFloat)brightness;
++ (NSString *)hexStringForHue:(CGFloat)hue saturation:(CGFloat)saturation brightness:(CGFloat)brightness;   // "#A34CBE"
+
+#pragma mark - Material 3 design and the moving gradient wallpaper
+
++ (BOOL)materialDesign;                                // Material 3 look (cards, tonal surfaces, M3 switches and sliders)
++ (void)setMaterialDesign:(BOOL)on;                    // does not post a notification
++ (NSInteger)gradientWallpaperChoice;                  // the wallpaper choice that means "moving gradient" (= ThemeSkinCount)
++ (BOOL)gradientWallpaperActive;                       // the chat shows the moving gradient made from the accent colour
++ (NSArray<UIColor *> *)gradientWallpaperColors;       // four colours, tinted by the accent, for the current light / dark mode
+
 #pragma mark - App icon
 
 + (NSString *)iconNameForSkin:(ThemeSkin)skin;       // key in CFBundleAlternateIcons; nil for the default icon
 + (UIImage *)iconPreviewForSkin:(ThemeSkin)skin;
++ (NSString *)iconNameForSkin:(ThemeSkin)skin dark:(BOOL)dark;   // key in CFBundleAlternateIcons for the light or dark picture ("SideStore-Dark", "Default-Dark"...)
++ (UIImage *)iconPreviewForSkin:(ThemeSkin)skin dark:(BOOL)dark;
++ (BOOL)iconStyleDark;                                // the style picked in Settings > Appearance > App icon (light or dark pictures)
++ (void)setIconStyleDark:(BOOL)dark;
++ (BOOL)activeIconDark;                               // the Home Screen icon in use is the dark picture
 + (NSString *)iconDisplayNameForSkin:(ThemeSkin)skin;   // "SideStore", "LiveContainer"... (no "Skin"); "Mặc định" for the default icon
 + (UIImage *)activeIconImage;                         // picture of the icon in use (the logo for the default icon)
 + (ThemeSkin)activeIconSkin;                          // the icon that is on the Home Screen now (ThemeSkinClaude = default)
@@ -93,7 +118,7 @@ typedef NS_ENUM(NSInteger, ThemeSkin) {
 // system API does not update the Home Screen for apps installed in /Applications.
 + (BOOL)iconHelperAvailable;
 + (ThemeSkin)helperIconSkin;                         // the skin whose icon the helper last applied
-+ (BOOL)applyIconWithHelperForSkin:(ThemeSkin)skin message:(NSString **)message;   // blocking: call off the main thread
++ (BOOL)applyIconWithHelperForSkin:(ThemeSkin)skin dark:(BOOL)dark message:(NSString **)message;   // blocking: call off the main thread
 + (void)reapplyHelperIconIfNeeded;                   // e.g. after the .deb was upgraded and reset the icon files
 
 #pragma mark - Web page

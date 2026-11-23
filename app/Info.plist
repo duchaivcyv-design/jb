@@ -97,14 +97,77 @@
 				<key>UIPrerenderedIcon</key>
 				<false/>
 			</dict>
+			<key>Default-Dark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>Icon-Default-Dark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>SideStore-Dark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>Icon-SideStore-Dark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>LiveContainer-Dark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>Icon-LiveContainer-Dark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>Dopamine-Dark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>Icon-Dopamine-Dark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>Chimera-Dark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>Icon-Chimera-Dark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>Sileo-Dark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>Icon-Sileo-Dark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
+			<key>Github-Dark</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>Icon-Github-Dark</string>
+				</array>
+				<key>UIPrerenderedIcon</key>
+				<false/>
+			</dict>
 		</dict>
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>ClaudeMini uses the camera so you can photograph homework or notes to send to Gemini.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Dùng để ghi âm giọng nói cho tính năng trò chuyện bằng giọng nói.</string>
+	<string>Dùng để ghi âm giọng nói của bạn khi bấm nút mic, để chuyển lời nói thành văn bản.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Dùng để nhận dạng giọng nói thành văn bản khi trò chuyện bằng giọng nói.</string>
+	<string>Dùng để chuyển lời bạn nói thành văn bản khi bấm nút mic.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>ClaudeMini reads the photos you choose so you can send them to Gemini.</string>
 	<key>LSRequiresIPhoneOS</key>
@@ -122,11 +185,50 @@
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UIStatusBarStyle</key>
 	<string>UIStatusBarStyleDefault</string>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.claudemini.instructions</string>
+			<key>UTTypeDescription</key>
+			<string>ClaudeMini instructions</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>clmn</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>text/x-claudemini-instructions</string>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>ClaudeMini instructions</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.claudemini.instructions</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
@@ -141,7 +243,7 @@
 		<string>shareddocuments</string>
 	</array>
 	<key>ClaudeMiniUpdateRepo</key>
-	<string></string>
+	<string>ClaudeminiUpdateServices/claudemini-updater</string>
 	<key>UILaunchImages</key>
 	<array>
 		<dict>

@@ -46,13 +46,23 @@ static NSString *const kSkinKey = @"theme.skin";
 static NSString *const kDarkKey = @"theme.dark";
 static NSString *const kAutoKey = @"theme.auto";
 static NSString *const kWallpaperKey = @"theme.wallpaper";
+static NSString *const kAccOnKey = @"theme.acc.on";
+static NSString *const kAccHKey = @"theme.acc.h";
+static NSString *const kAccSKey = @"theme.acc.s";
+static NSString *const kAccBKey = @"theme.acc.b";
+static NSString *const kMaterialKey = @"theme.material";
 static NSString *const kHelperIconKey = @"theme.helperIconSkin";
+static NSString *const kHelperIconDarkKey = @"theme.helperIconDark";
+static NSString *const kIconStyleDarkKey = @"theme.iconStyleDark";
 
 static ThemeSkin gSkin = ThemeSkinClaude;
 static BOOL gDark = NO;        // the manual choice (used when auto mode is off)
 static BOOL gAuto = NO;        // follow the device clock: dark from 18:00 to 05:59
 static BOOL gLastDark = NO;    // what the screens were last styled with (to notice the clock crossing 18:00 / 06:00)
 static NSInteger gWallpaper = -1;
+static BOOL gAccOn = NO;
+static CGFloat gAccH = 0.78, gAccS = 0.6, gAccB = 0.75;
+static BOOL gMaterial = NO;
 static dispatch_once_t gPrefsOnce;
 
 static BOOL IsNightNow(void);
@@ -66,7 +76,14 @@ static void LoadPrefs(void) {
         gAuto = [defaults boolForKey:kAutoKey];
         NSNumber *wallpaper = [defaults objectForKey:kWallpaperKey];
         NSInteger choice = [wallpaper isKindOfClass:[NSNumber class]] ? wallpaper.integerValue : -1;
-        gWallpaper = (choice >= -1 && choice < ThemeSkinCount) ? choice : -1;
+        gWallpaper = (choice >= -1 && choice <= ThemeSkinCount) ? choice : -1;   // ThemeSkinCount = the moving gradient
+        gAccOn = [defaults boolForKey:kAccOnKey];
+        if ([defaults objectForKey:kAccHKey]) {
+            gAccH = MAX(0, MIN(1, [defaults doubleForKey:kAccHKey]));
+            gAccS = MAX(0, MIN(1, [defaults doubleForKey:kAccSKey]));
+            gAccB = MAX(0, MIN(1, [defaults doubleForKey:kAccBKey]));
+        }
+        gMaterial = [defaults boolForKey:kMaterialKey];
         gLastDark = gAuto ? IsNightNow() : gDark;
     });
 }
@@ -82,9 +99,48 @@ static BOOL EffectiveDark(void) {
     return gAuto ? IsNightNow() : gDark;
 }
 
+static uint32_t HexFromHSB(CGFloat h, CGFloat s, CGFloat b) {
+    UIColor *color = [UIColor colorWithHue:h saturation:s brightness:b alpha:1];
+    CGFloat r = 0, g = 0, bl = 0, a = 0;
+    [color getRed:&r green:&g blue:&bl alpha:&a];
+    return ((uint32_t)lround(r * 255) << 16) | ((uint32_t)lround(g * 255) << 8) | (uint32_t)lround(bl * 255);
+}
+
+// Material-style tonal palette from one colour: surfaces carry a little of the hue, text stays neutral.
+static ThemePalette DerivedPalette(CGFloat h, CGFloat s, CGFloat b, BOOL dark) {
+    CGFloat t = MIN(1.0, 0.35 + s);   // a grey accent gives neutral surfaces
+    ThemePalette p;
+    if (dark) {
+        p.bg = HexFromHSB(h, 0.30 * t, 0.095);
+        p.surface = HexFromHSB(h, 0.28 * t, 0.165);
+        p.border = HexFromHSB(h, 0.24 * t, 0.27);
+        p.selection = HexFromHSB(h, 0.26 * t, 0.22);
+        p.text = HexFromHSB(h, 0.05 * t, 0.94);
+        p.secondary = HexFromHSB(h, 0.12 * t, 0.70);
+        p.accent = HexFromHSB(h, s, MAX(b, 0.62));
+    } else {
+        p.bg = HexFromHSB(h, 0.06 * t, 0.985);
+        p.surface = 0xFFFFFF;
+        p.border = HexFromHSB(h, 0.14 * t, 0.89);
+        p.selection = HexFromHSB(h, 0.10 * t, 0.95);
+        p.text = HexFromHSB(h, 0.35 * t, 0.13);
+        p.secondary = HexFromHSB(h, 0.14 * t, 0.42);
+        p.accent = HexFromHSB(h, s, MIN(b, 0.80));
+    }
+    return p;
+}
+
 static ThemePalette CurrentPalette(void) {
     LoadPrefs();
-    return kPalettes[gSkin][EffectiveDark() ? 1 : 0];
+    BOOL dark = EffectiveDark();
+    if (gAccOn) return DerivedPalette(gAccH, gAccS, gAccB, dark);
+    return kPalettes[gSkin][dark ? 1 : 0];
+}
+
+static ThemePalette PaletteForMode(BOOL dark) {
+    LoadPrefs();
+    if (gAccOn) return DerivedPalette(gAccH, gAccS, gAccB, dark);
+    return kPalettes[gSkin][dark ? 1 : 0];
 }
 
 static UIColor *HexColor(uint32_t hex) {
@@ -107,6 +163,11 @@ static uint32_t ScaleHex(uint32_t a, double factor) {
     double g = MIN(255.0, ((a >> 8) & 0xFF) * factor);
     double b = MIN(255.0, (a & 0xFF) * factor);
     return ((uint32_t)lround(r) << 16) | ((uint32_t)lround(g) << 8) | (uint32_t)lround(b);
+}
+
+static BOOL AccentIsLight(uint32_t hex) {
+    double r = ((hex >> 16) & 0xFF) / 255.0, g = ((hex >> 8) & 0xFF) / 255.0, b = (hex & 0xFF) / 255.0;
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.62;
 }
 
 static NSString *CSSHex(uint32_t hex) {
@@ -141,7 +202,7 @@ static NSString *WallpaperFileKey(NSInteger index) {
 + (UIColor *)selection      { return HexColor(CurrentPalette().selection); }
 
 + (UIFont *)serifFontOfSize:(CGFloat)size {
-    if ([AppSettings fontStyle] == 1) return [UIFont systemFontOfSize:size weight:UIFontWeightSemibold];   // "System font" choice
+    if ([AppSettings fontStyle] != 0) return [UIFont systemFontOfSize:size weight:UIFontWeightSemibold];   // "System font" / "SF Rounded" choice
     UIFont *font = [UIFont fontWithName:@"Georgia" size:size];
     return font ? font : [UIFont systemFontOfSize:size weight:UIFontWeightSemibold];
 }
@@ -159,6 +220,82 @@ static NSString *WallpaperFileKey(NSInteger index) {
 + (UIKeyboardAppearance)keyboardAppearance {
     LoadPrefs();
     return EffectiveDark() ? UIKeyboardAppearanceDark : UIKeyboardAppearanceLight;
+}
+
++ (UIColor *)onAccent {
+    return AccentIsLight(CurrentPalette().accent) ? HexColor(0x1B1B1B) : [UIColor whiteColor];
+}
+
+#pragma mark - Custom accent
+
++ (BOOL)customAccentActive { LoadPrefs(); return gAccOn; }
+
++ (void)getCustomHue:(CGFloat *)hue saturation:(CGFloat *)saturation brightness:(CGFloat *)brightness {
+    LoadPrefs();
+    CGFloat h = gAccH, s = gAccS, b = gAccB;
+    if (!gAccOn) {
+        CGFloat a = 0;
+        [HexColor(kPalettes[gSkin][EffectiveDark() ? 1 : 0].accent) getHue:&h saturation:&s brightness:&b alpha:&a];
+    }
+    if (hue) *hue = h;
+    if (saturation) *saturation = s;
+    if (brightness) *brightness = b;
+}
+
++ (void)setCustomHue:(CGFloat)hue saturation:(CGFloat)saturation brightness:(CGFloat)brightness {
+    LoadPrefs();
+    gAccOn = YES;
+    gAccH = MAX(0, MIN(1, hue));
+    gAccS = MAX(0, MIN(1, saturation));
+    gAccB = MAX(0, MIN(1, brightness));
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:YES forKey:kAccOnKey];
+    [defaults setDouble:gAccH forKey:kAccHKey];
+    [defaults setDouble:gAccS forKey:kAccSKey];
+    [defaults setDouble:gAccB forKey:kAccBKey];
+}
+
++ (void)resetCustomAccent {
+    LoadPrefs();
+    gAccOn = NO;
+    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kAccOnKey];
+}
+
++ (UIColor *)colorWithHue:(CGFloat)hue saturation:(CGFloat)saturation brightness:(CGFloat)brightness {
+    return [UIColor colorWithHue:MAX(0, MIN(1, hue)) saturation:MAX(0, MIN(1, saturation)) brightness:MAX(0, MIN(1, brightness)) alpha:1];
+}
+
++ (NSString *)hexStringForHue:(CGFloat)hue saturation:(CGFloat)saturation brightness:(CGFloat)brightness {
+    return CSSHex(HexFromHSB(MAX(0, MIN(1, hue)), MAX(0, MIN(1, saturation)), MAX(0, MIN(1, brightness))));
+}
+
+#pragma mark - Material 3 design and the moving gradient
+
++ (BOOL)materialDesign { LoadPrefs(); return gMaterial; }
+
++ (void)setMaterialDesign:(BOOL)on {
+    LoadPrefs();
+    gMaterial = on;
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:kMaterialKey];
+}
+
++ (NSInteger)gradientWallpaperChoice { return ThemeSkinCount; }
+
++ (BOOL)gradientWallpaperActive { LoadPrefs(); return gWallpaper == ThemeSkinCount; }
+
++ (NSArray<UIColor *> *)gradientWallpaperColors {
+    ThemePalette p = CurrentPalette();
+    BOOL dark = EffectiveDark();
+    CGFloat h = 0, s = 0, b = 0, a = 0;
+    [HexColor(p.accent) getHue:&h saturation:&s brightness:&b alpha:&a];
+    uint32_t shifted = HexFromHSB(fmod(h + 0.07, 1.0), s, b);
+    uint32_t cooler = HexFromHSB(fmod(h + 0.93, 1.0), s, b);
+    if (dark) {
+        return @[HexColor(MixHex(p.bg, p.accent, 0.20)), HexColor(MixHex(p.bg, shifted, 0.42)),
+                 HexColor(MixHex(p.bg, p.accent, 0.12)), HexColor(MixHex(p.bg, cooler, 0.34))];
+    }
+    return @[HexColor(MixHex(p.bg, p.accent, 0.16)), HexColor(MixHex(p.bg, shifted, 0.34)),
+             HexColor(MixHex(p.bg, p.accent, 0.08)), HexColor(MixHex(p.bg, cooler, 0.28))];
 }
 
 #pragma mark - Icons
@@ -497,7 +634,7 @@ static NSString *WallpaperFileKey(NSInteger index) {
     [bar setBackgroundImage:[self imageWithColor:[self background]] forBarMetrics:UIBarMetricsDefault];
     bar.shadowImage = [[UIImage alloc] init];
     bar.titleTextAttributes = @{ NSForegroundColorAttributeName: [self text],
-                                 NSFontAttributeName: [self serifFontOfSize:18] };
+                                 NSFontAttributeName: [self serifFontOfSize:[self materialDesign] ? 16 : 18] };   // smaller bar title in Material 3
 }
 
 #pragma mark - Skin, dark mode, wallpaper
@@ -509,6 +646,13 @@ static NSString *WallpaperFileKey(NSInteger index) {
     if (skin < 0 || skin >= ThemeSkinCount) skin = ThemeSkinClaude;
     gSkin = skin;
     [[NSUserDefaults standardUserDefaults] setInteger:skin forKey:kSkinKey];
+}
+
++ (UIVisualEffectView *)backdropBlurView {
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:[self darkMode] ? UIBlurEffectStyleDark : UIBlurEffectStyleLight]];
+    blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    blur.userInteractionEnabled = NO;
+    return blur;
 }
 
 + (BOOL)darkMode { return EffectiveDark(); }
@@ -542,7 +686,7 @@ static NSString *WallpaperFileKey(NSInteger index) {
 
 + (void)setWallpaperChoice:(NSInteger)choice {
     LoadPrefs();
-    if (choice < -1 || choice >= ThemeSkinCount) choice = -1;
+    if (choice < -1 || choice > ThemeSkinCount) choice = -1;   // ThemeSkinCount = the moving gradient
     gWallpaper = choice;
     [[NSUserDefaults standardUserDefaults] setInteger:choice forKey:kWallpaperKey];
 }
@@ -550,7 +694,7 @@ static NSString *WallpaperFileKey(NSInteger index) {
 + (NSInteger)effectiveWallpaperIndex {
     LoadPrefs();
     NSInteger index = gWallpaper < 0 ? (NSInteger)gSkin : gWallpaper;   // the Claude skin has no wallpaper (0)
-    return (index >= 1 && index < ThemeSkinCount) ? index : 0;
+    return (index >= 1 && index < ThemeSkinCount) ? index : 0;   // the moving gradient is not a picture: 0
 }
 
 + (void)postChange {
@@ -668,7 +812,7 @@ static NSString *WallpaperFileKey(NSInteger index) {
 
 + (UIImage *)modePreviewImageDark:(BOOL)dark size:(CGSize)size {
     LoadPrefs();
-    ThemePalette p = kPalettes[gSkin][dark ? 1 : 0];
+    ThemePalette p = PaletteForMode(dark);
     NSInteger wallpaperIndex = [self effectiveWallpaperIndex];
     UIImage *wallpaper = wallpaperIndex > 0 ? [self wallpaperThumbnail:wallpaperIndex] : nil;
     CGRect rect = CGRectMake(0, 0, size.width, size.height);
@@ -743,9 +887,19 @@ static NSString *WallpaperFileKey(NSInteger index) {
     }
 }
 
-+ (UIImage *)iconPreviewForSkin:(ThemeSkin)skin {
++ (NSString *)iconNameForSkin:(ThemeSkin)skin dark:(BOOL)dark {
     NSString *name = [self iconNameForSkin:skin];
-    NSString *file = [NSString stringWithFormat:@"Icon-%@@3x", name ?: @"Default"];
+    if (!dark) return name;                                       // nil = the default (light) icon
+    return [(name ?: @"Default") stringByAppendingString:@"-Dark"];
+}
+
++ (UIImage *)iconPreviewForSkin:(ThemeSkin)skin {
+    return [self iconPreviewForSkin:skin dark:NO];
+}
+
++ (UIImage *)iconPreviewForSkin:(ThemeSkin)skin dark:(BOOL)dark {
+    NSString *name = [self iconNameForSkin:skin];
+    NSString *file = [NSString stringWithFormat:@"Icon-%@%@@3x", name ?: @"Default", dark ? @"-Dark" : @""];
     static NSCache *cache;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ cache = [[NSCache alloc] init]; });
@@ -757,11 +911,20 @@ static NSString *WallpaperFileKey(NSInteger index) {
     return image;
 }
 
++ (BOOL)iconStyleDark {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kIconStyleDarkKey];
+}
+
++ (void)setIconStyleDark:(BOOL)dark {
+    [[NSUserDefaults standardUserDefaults] setBool:dark forKey:kIconStyleDarkKey];
+}
+
 // The picture of the icon that is in use now: the key screen and the greeting show the same icon as the Home Screen.
 + (UIImage *)activeIconImage {
     NSString *name = [self iconNameForSkin:[self activeIconSkin]];
-    if (name.length > 0) {
-        UIImage *image = [self iconPreviewForSkin:[self activeIconSkin]];
+    BOOL dark = [self activeIconDark];
+    if (name.length > 0 || dark) {
+        UIImage *image = [self iconPreviewForSkin:[self activeIconSkin] dark:dark];
         if (image) return image;
     }
     return [UIImage imageNamed:@"logo.png"];
@@ -776,11 +939,17 @@ static NSString *WallpaperFileKey(NSInteger index) {
 + (ThemeSkin)activeIconSkin {
     if ([self iconHelperAvailable]) return [self helperIconSkin];
     NSString *name = [self currentIconName];
-    if (name.length == 0) return ThemeSkinClaude;
+    if ([name hasSuffix:@"-Dark"]) name = [name substringToIndex:name.length - 5];
+    if (name.length == 0 || [name isEqualToString:@"Default"]) return ThemeSkinClaude;
     for (NSInteger i = ThemeSkinSideStore; i < ThemeSkinCount; i++) {
         if ([[self iconNameForSkin:(ThemeSkin)i] isEqualToString:name]) return (ThemeSkin)i;
     }
     return ThemeSkinClaude;
+}
+
++ (BOOL)activeIconDark {
+    if ([self iconHelperAvailable]) return [[NSUserDefaults standardUserDefaults] boolForKey:kHelperIconDarkKey];
+    return [[self currentIconName] hasSuffix:@"-Dark"];
 }
 
 + (NSString *)currentIconName {
@@ -803,17 +972,19 @@ static NSString *HelperPath(void) {
     return (value >= 0 && value < ThemeSkinCount) ? (ThemeSkin)value : ThemeSkinClaude;
 }
 
-+ (BOOL)applyIconWithHelperForSkin:(ThemeSkin)skin message:(NSString **)message {
++ (BOOL)applyIconWithHelperForSkin:(ThemeSkin)skin dark:(BOOL)dark message:(NSString **)message {
     if (![self iconHelperAvailable]) {
         if (message) *message = @"icon helper missing or not setuid";
         return NO;
     }
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
     NSInteger previous = [defaults integerForKey:kHelperIconKey];
+    BOOL previousDark = [defaults boolForKey:kHelperIconDarkKey];
     [defaults setInteger:skin forKey:kHelperIconKey];   // saved first: uicache may restart the app
+    [defaults setBool:dark forKey:kHelperIconDarkKey];
     [defaults synchronize];
 
-    NSString *name = [self iconNameForSkin:skin] ?: @"Default";
+    NSString *name = [self iconNameForSkin:skin dark:dark] ?: @"Default";
     const char *path = HelperPath().fileSystemRepresentation;
     char *argv[] = { (char *)path, (char *)name.UTF8String, NULL };
     pid_t pid = 0;
@@ -832,6 +1003,7 @@ static NSString *HelperPath(void) {
     }
     if (!ok) {
         [defaults setInteger:previous forKey:kHelperIconKey];
+        [defaults setBool:previousDark forKey:kHelperIconDarkKey];
         [defaults synchronize];
         if (message) *message = [NSString stringWithFormat:@"icon helper failed (code %d)", code];
     }
@@ -841,11 +1013,12 @@ static NSString *HelperPath(void) {
 + (void)reapplyHelperIconIfNeeded {
     if (![self iconHelperAvailable]) return;
     ThemeSkin skin = [self helperIconSkin];
-    NSString *name = [self iconNameForSkin:skin] ?: @"Default";
+    BOOL dark = [self activeIconDark];
+    NSString *name = [self iconNameForSkin:skin dark:dark] ?: @"Default";
     NSString *dir = [NSBundle mainBundle].bundlePath;
     NSData *current = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:@"AppIcon60x60@3x.png"]];
     NSData *wanted = [NSData dataWithContentsOfFile:[dir stringByAppendingPathComponent:[NSString stringWithFormat:@"Icon-%@@3x.png", name]]];
-    if (current && wanted && ![current isEqualToData:wanted]) [self applyIconWithHelperForSkin:skin message:NULL];
+    if (current && wanted && ![current isEqualToData:wanted]) [self applyIconWithHelperForSkin:skin dark:dark message:NULL];
 }
 
 + (BOOL)respringWithHelper {
@@ -860,13 +1033,15 @@ static NSString *HelperPath(void) {
 
 + (NSString *)signature {
     LoadPrefs();
-    return [NSString stringWithFormat:@"%ld-%d-%ld", (long)gSkin, EffectiveDark() ? 1 : 0, (long)[self effectiveWallpaperIndex]];
+    return [NSString stringWithFormat:@"%ld-%d-%ld-%d-%.3f-%.3f-%.3f-%d-%ld", (long)gSkin, EffectiveDark() ? 1 : 0, (long)[self effectiveWallpaperIndex],
+            gAccOn ? 1 : 0, gAccH, gAccS, gAccB, gMaterial ? 1 : 0, (long)gWallpaper];
 }
 
 // data: URI of the chosen alternate icon (nil for the default icon). Cached per icon: the files never change at run time.
 + (NSString *)activeIconDataURI {
     ThemeSkin skin = [self activeIconSkin];
-    NSString *name = [self iconNameForSkin:skin];
+    BOOL dark = [self activeIconDark];
+    NSString *name = [self iconNameForSkin:skin dark:dark];
     if (name.length == 0) return nil;
     static NSMutableDictionary *cache = nil;
     static dispatch_once_t once;
@@ -885,9 +1060,9 @@ static NSString *HelperPath(void) {
     LoadPrefs();
     ThemePalette p = CurrentPalette();
     BOOL dark = EffectiveDark();
-    BOOL hasWallpaper = [self effectiveWallpaperIndex] > 0;
+    BOOL hasWallpaper = [self effectiveWallpaperIndex] > 0 || gWallpaper == ThemeSkinCount;   // a picture or the moving gradient
 
-    uint32_t bubble = (gSkin == ThemeSkinClaude) ? p.selection : MixHex(p.surface, p.accent, dark ? 0.30 : 0.16);
+    uint32_t bubble = (gSkin == ThemeSkinClaude && !gAccOn) ? p.selection : MixHex(p.surface, p.accent, dark ? 0.30 : 0.16);
     uint32_t link = dark ? p.accent : ScaleHex(p.accent, 0.82);   // darker in light mode so links stay readable
     uint32_t codeBg = MixHex(p.bg, p.selection, 0.5);
 
@@ -895,8 +1070,8 @@ static NSString *HelperPath(void) {
     [css appendString:@":root{"];
     [css appendFormat:@"--bg:%@;--text:%@;--sec:%@;--border:%@;--sel:%@;--bubble:%@;",
         CSSHex(p.bg), CSSHex(p.text), CSSHex(p.secondary), CSSHex(p.border), CSSHex(p.selection), CSSHex(bubble)];
-    [css appendFormat:@"--accent:%@;--onaccent:#FFFFFF;--link:%@;--card:%@;--code-bg:%@;",
-        CSSHex(p.accent), CSSHex(link), CSSRGBA(p.surface, dark ? 0.88 : 0.90), CSSHex(codeBg)];
+    [css appendFormat:@"--accent:%@;--onaccent:%@;--link:%@;--card:%@;--code-bg:%@;",
+        CSSHex(p.accent), AccentIsLight(p.accent) ? @"#1B1B1B" : @"#FFFFFF", CSSHex(link), CSSRGBA(p.surface, dark ? 0.88 : 0.90), CSSHex(codeBg)];
     if (dark) {
         [css appendString:@"--err-bg:#3A1D18;--err-border:#6B3328;--err-text:#F0A494;"];
         [css appendFormat:@"--toast-bg:%@;--toast-fg:%@;", CSSHex(p.text), CSSHex(p.bg)];
@@ -912,6 +1087,11 @@ static NSString *HelperPath(void) {
     NSString *iconURI = [self activeIconDataURI];
     if (iconURI.length > 0) [css appendFormat:@".empty .logo{background-image:url(\"%@\") !important;}", iconURI];
 
+    if (gMaterial) {
+        // Material 3: rounder message shapes, tonal user bubble, softer cards.
+        [css appendString:@".bubble{border-radius:calc(22px * var(--uiscale)) calc(22px * var(--uiscale)) calc(6px * var(--uiscale)) calc(22px * var(--uiscale)) !important;}"];
+        [css appendString:@".act,.code-block,pre{border-radius:calc(18px * var(--uiscale)) !important;}"];
+    }
     if (hasWallpaper) {
         // Text sits on translucent cards so it stays readable on any wallpaper.
         [css appendString:@".row.assistant .body{background:var(--card);padding:12px 14px;border-radius:16px;}"];

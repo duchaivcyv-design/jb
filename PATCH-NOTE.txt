@@ -1,25 +1,128 @@
-ClaudeMini 0.7.3 + Google sign-in + anti-freeze patch
+ClaudeMini 0.7.4-1 (beta)
 
-NEW files (src/):  GoogleAuth.h/.m, StreamWatchdog.h/.m
-CHANGED: src/KeyStore, KeyTier, GeminiClient, GeminiStream, ClaudeStream, ChatViewController, RootViewController,
-         SettingsViewController, app/Resources/web/render.js + chat.js, en/vi Localizable.strings, build.sh
-         (adds -framework AuthenticationServices)
+Chat:
+- A reply no longer stops half way: if the connection drops, the stream closes quietly, or the model reaches its length limit,
+  the app keeps the text already received and asks the model to continue (Claude and Gemini).
+- Longer waiting time before a quiet connection counts as dead; the screen does not auto-lock while a reply is written.
+- If iOS restarts the chat page during a reply, the text received so far is drawn again.
 
-1) Sign in with Google (Gemini only; Claude stays API-key)
-- OAuth 2.0 + PKCE in the system sign-in sheet. You bring your OWN OAuth client ID (type "iOS") from a Google Cloud
-  project with the Generative Language API enabled. No client secret is stored. Optional Project ID -> x-goog-user-project.
-- API key and Google sign-in both work; the one set up most recently is used. Key screen: "Dang nhap bang Google".
-- Scopes: openid, email, cloud-platform, generative-language.retriever (as in ai.google.dev OAuth quickstart).
-- While the Cloud app is in "Testing", Google expires the refresh token after 7 days: sign in again.
+Mic:
+- Tap the mic, speak, the words appear in the input box, then press send. Tap the mic again to stop.
+- Voice choice, the Live screen and read-aloud were removed.
 
-2) Freeze fixes
-- ChatViewController.flushPendingJSDelta was missing its closing braces (file did not compile): fixed.
-- Web page killed by iOS during a long reply: the page reloaded but the running reply was no longer shown. Now restored.
-- render.js cached every intermediate highlighted version of a growing code block (memory ~ n^2 -> iOS kills the page):
-  growing blocks are plain while streaming, highlighted at the end; cache is bounded by size; redraw rate slows with length.
-- Streams that go silent (dead connection, app was in background) are now aborted after 45 s once text flows
-  (12 s after returning from background) and the reply continues automatically.
-- A request that timed out was retried up to 12-14 times x 180 s: timeouts are no longer retried inside the stream
-  (the chat falls back to one single request); quick errors retry 2-3 times and honour Retry-After; daily quota is not retried.
-- A connection cut in the middle of a reply was reported as success (reply silently truncated): now reported so the
-  existing auto-continue resumes it.
+Version: 0.7.4-1 (beta revision after the dash is read by the updater).
+
+Bang chon (beta): thay toan bo menu action sheet cua iOS bang pop-up kieu ClaudeMini (ChoicePopupViewController).
+
+Giao dien (beta): them 7 icon che do toi (Default, SideStore, LiveContainer, Dopamine, Chimera, Sileo, Github) ve theo kieu icon toi cua iOS (tools/make_dark_icons.py); man Giao dien gom 3 muc: Icon ung dung (chon Sang/Toi), Theme chat, Mau nhan.
+
+Icon toi (lam lai): tach hinh khoi nen bang do phu chinh xac tung pixel (khong con vien trang), ve lai gradient moi cho tung icon, LiveContainer dung tam nen toi + vien xanh.
+
+Icon toi: mau gradient lay dung tu anh goc (khong tu tao mau); chi nang do sang chung cho Dopamine va Github de khong bi chim vao nen toi.
+
+Hop thoai (beta): thay het UIAlertController (hop thoai xac nhan, thong bao, nhap mat khau dev, doi ten, xoa) bang pop-up ClaudeMini; hop co o nhap tu day len tren ban phim.
+
+Chi dan AI (beta): nut "Nhap tu tep (.clmn hoac .txt)" trong man Chi dan cho AI; mo tep .clmn bang ClaudeMini (Tep, chia se, AirDrop) thi app tu doc va nhap vao chi dan (hoi thay the hoac them vao cuoi neu da co chi dan).
+
+iPhone Duo (beta): bo cuc hai khung (danh sach chat co dinh ben trai, chat ben phai), cho phep xoay ngang, tranh tai tho khi xoay; Cai dat > Giao dien > iPhone Duo: chon Tu dong / Dien thoai / iPhone Duo va do rong khung trai; nut menu tren cung gap/mo khung trai; man key van chi xoay doc.
+
+Cap nhat phan mem (beta): gop 2 muc cap nhat (thuong + developer) thanh mot muc "Cap nhat phan mem" kieu iOS (hai hang: Tu dong cap nhat, Ban cap nhat beta; the co icon, phien ban, dung luong, ghi chu, nut "Cap nhat bay gio"). Kenh developer van sau mat khau; them lop bao mat: ban ghi so lan sai nhan ba ban co chu ky HMAC, chong chinh dong ho (dong ho don dieu), khoa 6 gio/24 gio khi sai nhieu, chan debugger/Frida, moi lan thu mat toi thieu 1,5 giay, khoa lai khi khoa man hinh/roi man cap nhat, kiem tra lai phien o moi buoc kiem tra, tai, cai.
+
+Khoa cap nhat developer (beta): sai 10 lan khoa 1 gio (moi lan sai tiep theo lai khoa 1 gio); trong luc khoa, nhap 1 trong 50 ma skip (chi luu dang hash co muoi, moi ma dung 1 lan) vao o mat khau de bo khoa; loi nhan khi bi khoa doi thanh cau moi; nen cua man cap nhat va hop mat khau developer lam mo (blur) giong nen lich su tro chuyen.
+
+Sua khoa developer (beta): bo 50 ma skip; chi co 1 mat khau duy nhat. Sai 15 lan thi khoa phan cap nhat developer 1 gio (trong luc khoa khong gi mo duoc, ke ca mat khau dung), hien loi nhan "Ai biểu spam cho cố vô, skip thì liên hệ zalo pucpucpuc để lấy key skip". Nen blur ap dung cho moi hop thoai (xac nhan, thong bao, nhap lieu, bang chon, chon model, cap nhat).
+
+[Chat hang fix]
+- GeminiStream/ClaudeStream: watchdog timer (live streams only). No first byte within 45-150 s (Gemini, by model) or 30-45 s (Claude), or silence mid-stream for 60-150 s: the task is cut and, if no text arrived, restarted silently on a fresh connection (max 2 times); otherwise finishes with a Network error so the existing continuation logic keeps the partial reply. Late callbacks of replaced sessions are ignored.
+- Idle timeouts shortened (live 100/160 s, single request 180/360 s).
+
+[Release]
+- Official 0.7.4 (beta 0.7.4-1 promoted).
+
+[Beta update row]
+- Settings > Data has a "Bản cập nhật beta" row again: password prompt, then the usual update pop-up (no separate page). The Software Update page keeps only the automatic-check option and always uses the normal releases.
+- Only one password opens the developer channel (new PBKDF2 verifiers; the password itself is not in the repo). The repository secret DEV_UPDATE_PASSWORD must hold the same password so developer builds are encrypted with it.
+
+[No lock-out]
+- Developer gate: wrong passwords are no longer counted and nothing locks the update section. Old wrong-try counters / one-hour locks stored by earlier builds are wiped on every attempt, so the right password is never refused.
+
+[Material 3 / accent / gradient / fonts]
+- Material.h/.m: tonal row cards (large outer corners, small inner ones), section headers (collapsible in Settings), Material switch, gradient slider with a ring thumb, cookie-shaped mascot, moving gradient view.
+- Appearance > Design style: Classic or Material 3 (Settings rows become cards with circle icons, left-aligned title, folding sections; chat bubbles get rounder shapes).
+- Appearance > Accent colour: new fixed (non-scrolling) page like the reference video: tinted gradient page, preview card with hex and mascot, Hue / Saturation / Brightness sliders, ten ready colours, Default button. The picked colour tints the whole palette (backgrounds, cards, borders, chat). Picking a skin drops the custom colour. Skins moved to Appearance > Chat theme.
+- Chat theme: new wallpaper "Gradient động" (moving gradient built from the accent colour, light or dark).
+- Font page: SF Rounded added (rounded design of the system font, iOS 13+; iOS 12 keeps the normal system font) and a 7-step weight slider. All [UIFont systemFontOfSize:...] go through FontStyle.m (method exchange), the chat web view gets the same font stack and weight.
+- Not compiled or run on a device.
+
+[0.8.0 beta]
+- Bundled SF Pro Rounded (9 weights, app/Resources/Fonts), registered through CoreText; works on iOS 12 too, in the app and in the chat web view.
+- Material 3 now applies to the whole app: pop-ups, model picker, system prompt, software update, chat input and cards (larger corner radii, tonal rows, spring press and ripple, entrance animation of rows).
+- Settings text is smaller and balanced (title 16, detail 13, section header 13).
+- Design, accent colour and font changes apply at once: the chat re-applies radii, font and theme without leaving the page.
+- Not compiled or run on a device.
+
+[0.8.0 beta 2]
+- Font page is now inside a scroll view (the weight slider at the bottom could not be reached) and uses Material 3 card radii.
+- Accent page mascot: turns all the time and morphs from one shape to the next (circle, cookie, clover, burst, soft square, flower, soft triangle, sunny) with a spring; dragging the hue slider morphs it live; it also changes by itself every few seconds.
+- Material slider: thumb swells under the finger and springs back, larger touch area.
+- Not compiled or run on a device.
+
+[0.8.0 beta 3]
+- Settings sections (Giao dien, API Keys, ...) now fold and unfold with an animation: rows fade out / drop in and the chevron springs round.
+- Removed the coloured (accent) flash when touching a row: the selected background is now the plain row colour, the ripple is neutral grey.
+- Not compiled or run on a device.
+
+[0.8.0 beta 4]
+- Font page always has a little extra to scroll (content is at least the screen height + 90 pt, 64 pt under the last card).
+- Not compiled or run on a device.
+
+[0.8.0 beta 5]
+- Font page: removed the min-height constraint that stretched the preview card when scrolling; the extra scroll room is now a bottom content inset (90 pt + home bar), so nothing is resized.
+- Not compiled or run on a device.
+
+[0.8.0 beta 6]
+- Unfolding a Settings section now animates (rows below slide, new rows spring in one by one). Cause of the missing animation: the row count was read from the table view cache (0 while folded) so it fell back to reloadData; it is now read from the data source.
+- Font page: bottom inset also covers the gap when the content is shorter than the screen, so there is always about 100 pt to scroll.
+- Not compiled or run on a device.
+
+[0.8.0 beta 7]
+- Smaller bar titles next to the back button (Material 3: 24 bold -> 19 semibold left titles, 18 -> 16 centered titles).
+- Not compiled or run on a device.
+
+[0.8.0 beta 8]
+- Font page scroll, root cause: the preview card height was open-ended (only >= 170), so the layout could not give the scroll view an exact content height. Now the card height is determined (low-priority 170, grows with its bubbles) and the content is tied to the scroll view contentLayoutGuide / frameLayoutGuide, so the page scrolls to the weight slider.
+- Not compiled or run on a device.
+
+[0.8.0 beta 9]
+- The font choice (SF Rounded) and the weight step now apply only to text created by the app itself. The exchanged UIFont methods check the caller (dladdr on the return address): calls from UIKit and other system code (alerts, keyboard, share sheet, menus) get the untouched system font.
+- Table header/footer labels (made by UIKit) get their font set explicitly.
+- Not compiled or run on a device.
+
+[0.8.0 beta 10]
+- Font page made compact so it fits an iPhone SE (667 pt) without scrolling: font rows 52 -> 46, preview card min 140, smaller gaps, 24 pt under the last card. The scroll view (with about 100 pt of extra room) stays as a second safeguard.
+- Not compiled or run on a device.
+
+[0.8.0 beta 11]
+- Gradient wallpaper redone: instead of one linear gradient whose colours and angle rotate (visible bands), it is now an aurora: a base colour with five large soft radial blobs (hues around the accent) that drift along slow elliptical paths and breathe. Soft in light mode, deep in dark mode; still when Reduce Motion is on.
+- Not compiled or run on a device.
+
+[0.8.0 beta 12]
+- Chat input bar: the corner radius (28 in Material 3) was larger than half of the bar height (46), which bent the ends of the pill into points. The radius is now min(28, height / 2), recomputed on every layout, so the bar is a clean pill and also rounds correctly when it grows to several lines.
+- Same fix for the update button (48 pt) and the system prompt import button (42 pt).
+- Not compiled or run on a device.
+
+[0.8.0 beta 13]
+- One set of Material 3 motion tokens in Material.h/.m: duration tokens (50..500 ms), easing curves (emphasized decelerate 0.05/0.7/0.1/1, emphasized accelerate 0.3/0/0.8/0.15, standard 0.2/0/0/1) and the Expressive springs (spatial fast 0.6/800, default 0.8/380, slow 0.8/200; effects 1.0/3800, 1.0/1600, 1.0/800), converted to CASpringAnimation (damping = 2 * zeta * sqrt(k)) and UIView springs whose duration is the settling time. Sources: material-components-android Motion.md, Compose MotionScheme and the open-source ports; the two sources disagree on some transition lengths, the choice is 400 ms enter / 200 ms exit.
+- Every existing Material animation now uses these tokens (card press, button press, switch, slider, thumb, section fold/unfold, row entrance).
+- New: dialogs (confirm, update, model, choice) grow from 0.9 on the spatial spring, fade in on the effects spring and shrink + fade out in 150 ms; the tool menu grows from 0.85; the history drawer opens with emphasized decelerate (400 ms) and closes with emphasized accelerate (250 ms); layout changes and the first chat reveal use the same tokens.
+- New: screen changes use the Material 3 shared-axis transition (30 pt slide + fade; 400 ms in, 200 ms out). An edge swipe back keeps UIKit's own interactive pop.
+- New: rows without a card (chat list, model list) dip on the spring when pressed; buttons that cover a big area no longer shrink when pressed; the choice-popup rows no longer flash the accent colour in Material 3.
+- Reduce Motion switches every one of these animations off.
+- Not compiled or run on a device.
+
+[0.8.0 beta 14]
+- Press on a card (list row), rewritten after the video:
+  * the corner morph is no longer a Core Animation path interpolation (it could bend the outline while the spring overshot, and the ripple mask jumped to the final outline at once, so the ripple stuck out of the corners). The corner radii are now numbers solved frame by frame with the exact spring formula (Expressive spatial fast: damping 0.6, stiffness 800), clamped to 0...half height, and the card shape and the ripple mask get the very same path every frame.
+  * the ripple (10 % of the text colour, as in Material 3) grows to the farthest corner in 450 ms with the emphasized decelerate curve and STAYS while the finger is down (before it faded half-way and left a hard edge); it fades in 300 ms when the finger leaves.
+  * the dip (scale 0.975) is kept, on the same spring.
+- Not compiled or run on a device.

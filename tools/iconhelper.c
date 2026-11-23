@@ -20,7 +20,8 @@ extern char **environ;
 
 #define APP_DIR "/Applications/ClaudeMini.app"
 
-static const char *kAllowed[] = { "Default", "SideStore", "LiveContainer", "Dopamine", "Chimera", "Sileo", "Github", NULL };
+static const char *kAllowed[] = { "Default", "SideStore", "LiveContainer", "Dopamine", "Chimera", "Sileo", "Github",
+                                    "Default-Dark", "SideStore-Dark", "LiveContainer-Dark", "Dopamine-Dark", "Chimera-Dark", "Sileo-Dark", "Github-Dark", NULL };
 
 static int copy_file(const char *src, const char *dst) {
     int in = open(src, O_RDONLY | O_NOFOLLOW);

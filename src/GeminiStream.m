@@ -2,12 +2,7 @@
 #import "AppSettings.h"
 #import "ModelStore.h"
 #import "Provider.h"
-#import "GoogleAuth.h"
-#import "StreamWatchdog.h"
-#import "DiagnosticLog.h"
-
-// Once real text is streaming, silence this long means the connection died (a live Gemini stream never pauses this long).
-static const NSTimeInterval kMidStreamIdleLimit = 45.0;
+#import "KeyStore.h"
 
 @interface GeminiStream () <NSURLSessionDataDelegate>
 @property (copy, nonatomic) NSString *key;
@@ -17,13 +12,12 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
 @property (strong, nonatomic) NSURLSession *session;
 @property (strong, nonatomic) NSURLSessionDataTask *task;
 @property (strong, nonatomic) NSMutableData *buffer;
-@property (assign, nonatomic) NSUInteger bufferReadOffset;
 @property (strong, nonatomic) NSMutableData *errorBody;
 @property (assign, nonatomic) NSInteger status;
 @property (assign, nonatomic) BOOL cancelled;
 @property (assign, nonatomic) BOOL finished;
 @property (assign, nonatomic) BOOL gotText;
-@property (assign, nonatomic) BOOL hitMaxTokens;
+@property (copy, nonatomic) NSString *lastFinishReason;   // set by the final chunk; without it a live stream was cut short
 @property (copy, nonatomic) NSString *blockReason;
 @property (assign, nonatomic) NSInteger inStreamErrorStatus;
 @property (copy, nonatomic) NSString *inStreamErrorMessage;
@@ -31,10 +25,13 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
 @property (assign, nonatomic) long long outputTokenUsage;
 
 @property (assign, nonatomic) NSInteger sameKeyRetryCount;
+// Watchdog: a live stream that goes quiet is cut and retried instead of leaving the chat waiting for minutes.
+@property (strong, nonatomic) NSTimer *watchdog;
+@property (assign, nonatomic) CFTimeInterval lastActivity;
+@property (assign, nonatomic) BOOL gotResponse;
+@property (assign, nonatomic) BOOL stallFired;
+@property (assign, nonatomic) NSInteger stallRetryCount;
 @property (strong, nonatomic) NSMutableURLRequest *savedRequest;
-@property (strong, nonatomic) StreamWatchdog *watchdog;
-@property (assign, nonatomic) BOOL stalled;
-@property (assign, nonatomic) BOOL sawFinish;   // the server sent a finishReason: the reply is complete
 @end
 
 @implementation GeminiStream
@@ -47,8 +44,7 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
         _model = [model copy];
         _turns = [turns copy];
         _system = [system copy];
-        _buffer = [NSMutableData dataWithCapacity:65536];
-        _bufferReadOffset = 0;
+        _buffer = [NSMutableData data];
         _errorBody = [NSMutableData data];
         _useStreaming = YES;
         _useFastSpeed = NO;
@@ -60,80 +56,57 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
 #pragma mark - Request format
 
 + (NSArray *)contentsFromTurns:(NSArray *)turns {
-    NSMutableArray *contents = [NSMutableArray arrayWithCapacity:turns.count];
+    NSMutableArray *contents = [NSMutableArray array];
     for (NSDictionary *turn in turns) {
-        if (![turn isKindOfClass:[NSDictionary class]]) continue;
-        NSArray *rawParts = [turn[@"parts"] isKindOfClass:[NSArray class]] ? turn[@"parts"] : @[];
-        NSMutableArray *parts = [NSMutableArray arrayWithCapacity:rawParts.count];
-        for (NSDictionary *part in rawParts) {
-            if (![part isKindOfClass:[NSDictionary class]]) continue;
+        NSMutableArray *parts = [NSMutableArray array];
+        for (NSDictionary *part in turn[@"parts"]) {
             NSString *type = part[@"type"];
-            if ([type isEqualToString:@"text"] && [part[@"text"] isKindOfClass:[NSString class]] && [part[@"text"] length] > 0) {
+            if ([type isEqualToString:@"text"] && [part[@"text"] length] > 0) {
                 [parts addObject:@{ @"text": part[@"text"] }];
-            } else if ([type isEqualToString:@"image"] && [part[@"data"] isKindOfClass:[NSString class]] && [part[@"data"] length] > 0) {
+            } else if ([type isEqualToString:@"image"] && [part[@"data"] length] > 0) {
                 [parts addObject:@{ @"inline_data": @{ @"mime_type": part[@"mime"] ?: @"image/jpeg", @"data": part[@"data"] } }];
-            } else if ([type isEqualToString:@"pdf"] && [part[@"data"] isKindOfClass:[NSString class]] && [part[@"data"] length] > 0) {
+            } else if ([type isEqualToString:@"pdf"] && [part[@"data"] length] > 0) {
                 [parts addObject:@{ @"inline_data": @{ @"mime_type": @"application/pdf", @"data": part[@"data"] } }];
             }
         }
         if (parts.count == 0) continue;
-        NSString *role = [turn[@"role"] isEqualToString:@"assistant"] ? @"model" : @"user";
-        [contents addObject:@{ @"role": role, @"parts": parts }];
+        [contents addObject:@{ @"role": [turn[@"role"] isEqualToString:@"assistant"] ? @"model" : @"user", @"parts": parts }];
     }
     return contents;
 }
 
-#pragma mark - Control
-
-- (NSTimeInterval)effectiveTimeout {
-    if (self.useFastSpeed) {
-        return self.useStreaming ? 75.0 : 105.0;
-    }
-    return self.useStreaming ? 180.0 : 240.0;
+// Seconds of silence tolerated before the connection counts as dead. Reasoning models can stay quiet for a long time, and a
+// single (non-live) request sends nothing until the whole answer is ready.
++ (NSTimeInterval)idleTimeoutFast:(BOOL)fast streaming:(BOOL)streaming {
+    if (!streaming) return fast ? 180 : 360;
+    return fast ? 100 : 160;
 }
 
-- (NSMutableURLRequest *)buildRequestWithBody:(NSData *)body {
+#pragma mark - Control
+
+- (void)start {
+    self.sameKeyRetryCount = 0;
+    self.stallRetryCount = 0;
     NSString *escapedModel = [self.model stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
     NSString *method = self.useStreaming ? @"streamGenerateContent?alt=sse" : @"generateContent";
     NSString *urlString = [NSString stringWithFormat:
         @"https://generativelanguage.googleapis.com/v1beta/models/%@:%@", escapedModel, method];
 
-    NSTimeInterval timeout = [self effectiveTimeout];
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
-                                                           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                                                       timeoutInterval:timeout];
-    request.HTTPMethod = @"POST";
-    request.HTTPBody = body;
-    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    [request setValue:self.useStreaming ? @"text/event-stream" : @"application/json" forHTTPHeaderField:@"Accept"];
-    if (self.useStreaming) {
-        [request setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
-    }
-    // The credential (API key header, or Google Bearer token) is attached in -executeForcedRequest:.
-    return request;
-}
-
-- (void)start {
-    self.sameKeyRetryCount = 0;
-
     NSInteger requestedOutputTokens = [AppSettings maxOutputTokens];
     NSInteger modelCap = [ModelStore maxOutputTokensForModelId:self.model provider:AIProviderGemini];
     if (modelCap <= 0) modelCap = 8192;
-    AIReasoningLevel reasoning = [AppSettings reasoningLevel];
-
-    // Ép trần output cao hơn khi bật suy luận sâu/MAX để không bị cụt giữa chừng
-    NSInteger effectiveRequest = requestedOutputTokens;
-    if (!self.useFastSpeed && reasoning >= AIReasoningLevelHigh) {
-        effectiveRequest = MAX(requestedOutputTokens, MIN(modelCap, 65536));
-    }
-    NSInteger outputCeiling = effectiveRequest > 0 ? MIN(effectiveRequest, modelCap) : modelCap;
+    NSInteger outputCeiling = requestedOutputTokens > 0 ? MIN(requestedOutputTokens, modelCap) : modelCap;
     NSString *lowerModel = self.model.lowercaseString;
+    AIReasoningLevel reasoning = [AppSettings reasoningLevel];
 
     NSMutableDictionary *generationConfig = [NSMutableDictionary dictionary];
     BOOL supportsThinking = [lowerModel containsString:@"gemini-2.5"] ||
                             [lowerModel containsString:@"gemini-3"] ||
                             [lowerModel containsString:@"gemini-4"];
-    NSInteger maxThinkingAllowed = supportsThinking ? MAX(0, outputCeiling - 512) : 0;
+    NSInteger answerReserve = supportsThinking
+        ? MIN(outputCeiling, MAX(1024, (outputCeiling * 2) / 3))
+        : outputCeiling;
+    NSInteger availableThinking = supportsThinking ? MAX(0, outputCeiling - answerReserve) : 0;
 
     if ([lowerModel containsString:@"gemini-4"]) {
         NSArray *levels = self.useFastSpeed
@@ -152,9 +125,9 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
             : @[@0, @1024, @4096, @16384, @24576];
         NSInteger desiredBudget = [budgets[(NSUInteger)reasoning] integerValue];
         if (self.useFastSpeed) {
-            desiredBudget = desiredBudget / 4;
+            desiredBudget = desiredBudget / 2;
         }
-        NSInteger thinkingBudget = MIN(desiredBudget, maxThinkingAllowed);
+        NSInteger thinkingBudget = MIN(desiredBudget, availableThinking);
         if (proModel && thinkingBudget > 0 && thinkingBudget < 128) thinkingBudget = 0;
         if (!proModel || thinkingBudget >= 128) {
             generationConfig[@"thinkingConfig"] = @{ @"thinkingBudget": @(thinkingBudget) };
@@ -163,53 +136,44 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
 
     generationConfig[@"maxOutputTokens"] = @(MAX(1, outputCeiling));
     if (self.useFastSpeed) {
-        generationConfig[@"temperature"] = @0.35;
-    } else if (reasoning >= AIReasoningLevelVeryHigh) {
-        generationConfig[@"temperature"] = @0.7;
+        generationConfig[@"temperature"] = @0.4;
     }
 
-    BOOL imageGenerationModel = [lowerModel containsString:@"image"] || [lowerModel containsString:@"nano-banana"];
-    if (imageGenerationModel) {
+    if ([lowerModel containsString:@"image"] || [lowerModel containsString:@"nano-banana"]) {
+        [generationConfig removeObjectForKey:@"thinkingConfig"];   // image models reject thinking settings
         generationConfig[@"responseModalities"] = @[@"TEXT", @"IMAGE"];
     }
-
+    BOOL imageGenerationModel = [lowerModel containsString:@"image"] || [lowerModel containsString:@"nano-banana"];
     NSMutableDictionary *payload = [@{ @"contents": [GeminiStream contentsFromTurns:self.turns],
                                        @"generationConfig": generationConfig } mutableCopy];
-    if (self.system.length > 0) {
-        payload[@"systemInstruction"] = @{ @"parts": @[ @{ @"text": self.system } ] };
-    }
-    if ([AppSettings webSearchEnabled] && !imageGenerationModel) {
-        payload[@"tools"] = @[@{ @"google_search": @{} }];
-    }
+    if (self.system.length > 0) payload[@"systemInstruction"] = @{ @"parts": @[ @{ @"text": self.system } ] };
+    NSMutableArray *tools = [NSMutableArray array];
+    BOOL toolsOK = !self.disableTools && !imageGenerationModel;
+    if (self.allowWebSearch && toolsOK) [tools addObject:@{ @"google_search": @{} }];
+    if (self.allowCodeExecution && toolsOK) [tools addObject:@{ @"code_execution": @{} }];
+    if (tools.count > 0) payload[@"tools"] = tools;
+    NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
 
-    NSJSONWritingOptions opts = 0;
-    if (@available(iOS 13.0, *)) {
-        opts = NSJSONWritingWithoutEscapingSlashes;
+    NSTimeInterval timeout = [GeminiStream idleTimeoutFast:self.useFastSpeed streaming:self.useStreaming];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
+                                                           cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                                                       timeoutInterval:timeout];
+    request.HTTPMethod = @"POST";
+    request.HTTPBody = body;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:self.useStreaming ? @"text/event-stream" : @"application/json" forHTTPHeaderField:@"Accept"];
+    if (self.useStreaming) {
+        [request setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
     }
+    [KeyStore applyGeminiCredential:self.key toRequest:request];
 
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        GeminiStream *bgMe = weakSelf;
-        if (!bgMe || bgMe.cancelled || bgMe.finished) return;
-        NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:opts error:nil];
-        if (!body) body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            GeminiStream *mainMe = weakSelf;
-            if (!mainMe || mainMe.cancelled || mainMe.finished) return;
-            NSMutableURLRequest *request = [mainMe buildRequestWithBody:body];
-            mainMe.savedRequest = request;
-            [mainMe executeForcedRequest:request];
-        });
-    });
+    self.savedRequest = request;
+    [self executeForcedRequest:request];
 }
 
 - (void)executeForcedRequest:(NSMutableURLRequest *)request {
     if (self.finished || self.cancelled || !request) return;
 
-    [self.watchdog stop];
-    self.watchdog = nil;
-    self.stalled = NO;
     if (self.session) {
         [self.session invalidateAndCancel];
         self.session = nil;
@@ -217,78 +181,80 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
     self.task = nil;
 
     [self.buffer setLength:0];
-    self.bufferReadOffset = 0;
     [self.errorBody setLength:0];
     self.status = 0;
     self.gotText = NO;
-    self.sawFinish = NO;
-    self.hitMaxTokens = NO;
+    self.lastFinishReason = nil;
     self.inStreamErrorStatus = 0;
     self.inStreamErrorMessage = nil;
     self.blockReason = nil;
     self.inputTokenUsage = 0;
     self.outputTokenUsage = 0;
 
-    // Attach the credential now (a Google token may need a refresh first; for an API key this runs immediately).
-    __weak typeof(self) weakSelf = self;
-    [GoogleAuth authorizeRequest:request key:self.key completion:^(NSError *authError) {
-        GeminiStream *me = weakSelf;
-        if (!me || me.finished || me.cancelled) return;
-        if (authError != nil) { [me failWithAuthError:authError]; return; }
-        [me startTaskForRequest:request];
-    }];
-}
-
-- (void)startTaskForRequest:(NSMutableURLRequest *)request {
-    NSTimeInterval timeout = [self effectiveTimeout];
+    NSTimeInterval timeout = [GeminiStream idleTimeoutFast:self.useFastSpeed streaming:self.useStreaming];
     NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     config.timeoutIntervalForRequest = timeout;
-    config.timeoutIntervalForResource = 7200;
-    config.HTTPMaximumConnectionsPerHost = 6;
+    config.timeoutIntervalForResource = 3600;
     self.session = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:[NSOperationQueue mainQueue]];
+    self.stallFired = NO;
     self.task = [self.session dataTaskWithRequest:request];
     [self.task resume];
-
-    // Before any text arrives a model may legitimately think for a long time, so the idle limit is the request timeout;
-    // it drops to kMidStreamIdleLimit when the first text arrives (see -processChunk:).
-    StreamWatchdog *dog = [[StreamWatchdog alloc] init];
-    dog.idleLimit = timeout;
-    __weak typeof(self) weakSelf = self;
-    dog.onStall = ^{ [weakSelf streamStalled]; };
-    self.watchdog = dog;
-    [dog start];
+    [self startWatchdog];
 }
 
-- (void)streamStalled {
-    if (self.finished || self.cancelled) return;
-    [DiagnosticLog log:@"gemini stream silent for too long: aborting this attempt (gotText=%d)", self.gotText];
-    self.stalled = YES;
-    [self.task cancel];   // didCompleteWithError: then reports it as a timeout
+#pragma mark - Watchdog
+
+- (NSTimeInterval)firstByteDeadline {
+    NSString *m = self.model.lowercaseString ?: @"";
+    if (self.useFastSpeed) return 45;
+    if ([m containsString:@"pro"]) return 120;
+    return 60;
 }
 
-- (void)failWithAuthError:(NSError *)authError {
-    if (self.finished) return;
-    self.finished = YES;
-    [self.watchdog stop];
+- (NSTimeInterval)midStreamDeadline {
+    NSString *m = self.model.lowercaseString ?: @"";
+    if ([m containsString:@"pro"]) return 150;
+    return 90;
+}
+
+- (void)startWatchdog {
+    [self.watchdog invalidate];
     self.watchdog = nil;
-    [self.session invalidateAndCancel];
-    self.session = nil;
-    self.task = nil;
-    BOOL signInNeeded = [authError.domain isEqualToString:GoogleAuthErrorDomain] && authError.code == GoogleAuthErrorSignInRequired;
-    void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
-    NSString *detail = [GoogleAuth messageForError:authError];
-    self.onDelta = nil;
-    self.onImage = nil;
-    self.onUsage = nil;
-    self.onFinish = nil;
-    if (finish) finish(signInNeeded ? GeminiStreamErrorInvalidKey : GeminiStreamErrorNetwork, signInNeeded ? 401 : 0, detail);
+    self.gotResponse = NO;
+    self.lastActivity = CACurrentMediaTime();
+    if (!self.useStreaming) return;   // a single request is silent until the whole answer is ready
+    __weak typeof(self) weakSelf = self;
+    NSTimer *timer = [NSTimer timerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
+        GeminiStream *me = weakSelf;
+        if (!me || me.finished || me.cancelled) { [t invalidate]; return; }
+        [me checkWatchdog];
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
+    self.watchdog = timer;
 }
+
+- (void)stopWatchdog {
+    [self.watchdog invalidate];
+    self.watchdog = nil;
+}
+
+- (void)checkWatchdog {
+    if (!self.task || self.stallFired) return;   // between retries, or already being cut
+    NSTimeInterval limit = self.gotResponse ? [self midStreamDeadline] : [self firstByteDeadline];
+    if (CACurrentMediaTime() - self.lastActivity < limit) return;
+    self.stallFired = YES;
+    [self.task cancel];   // didCompleteWithError follows and decides: silent retry, or finish with what arrived
+}
+
+- (void)dealloc {
+    [self.watchdog invalidate];
+}
+
 
 - (void)cancel {
     if (self.finished) return;
     self.cancelled = YES;
-    [self.watchdog stop];
-    self.watchdog = nil;
+    [self stopWatchdog];
     [self.task cancel];
     [self.session invalidateAndCancel];
     self.session = nil;
@@ -301,7 +267,8 @@ static const NSTimeInterval kMidStreamIdleLimit = 45.0;
           dataTask:(NSURLSessionDataTask *)dataTask
 didReceiveResponse:(NSURLResponse *)response
  completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
-    [self.watchdog touch];
+    self.gotResponse = YES;
+    self.lastActivity = CACurrentMediaTime();
     self.status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
     self.retryAfterSeconds = 0;
     if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
@@ -326,7 +293,7 @@ didReceiveResponse:(NSURLResponse *)response
 }
 
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
-    [self.watchdog touch];
+    self.lastActivity = CACurrentMediaTime();
     if (self.status != 200) {
         [self.errorBody appendData:data];
         return;
@@ -337,13 +304,27 @@ didReceiveResponse:(NSURLResponse *)response
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     if (self.finished) return;
-    if (self.task != nil && task != self.task) return;   // late callback from an attempt that was already replaced
-    [self.watchdog stop];
-    self.watchdog = nil;
-    if (self.stalled) {
-        self.stalled = NO;
+    if (self.session && session != self.session) return;   // late callback of a session that was already replaced
+    [self stopWatchdog];
+    BOOL stallGaveUp = NO;
+    if (self.stallFired && !self.cancelled) {
+        self.stallFired = NO;
+        if (!self.gotText && self.stallRetryCount < 2) {
+            // Nothing useful arrived: start over on a fresh connection right away, without bothering the user.
+            self.stallRetryCount++;
+            [self.session invalidateAndCancel];
+            self.session = nil;
+            self.task = nil;
+            __weak typeof(self) weakSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                GeminiStream *me = weakSelf;
+                if (me && !me.finished && !me.cancelled) [me executeForcedRequest:me.savedRequest];
+            });
+            return;
+        }
+        stallGaveUp = YES;
         error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorTimedOut
-                                userInfo:@{ NSLocalizedDescriptionKey: @"The stream stopped sending data." }];
+                                userInfo:@{ NSLocalizedDescriptionKey: @"The connection stopped responding" }];
     }
 
     if (self.useStreaming) {
@@ -353,8 +334,7 @@ didReceiveResponse:(NSURLResponse *)response
     BOOL isRateLimitOrOverload = (self.status == 429 || self.status >= 500 ||
                                   self.inStreamErrorStatus == 429 || self.inStreamErrorStatus >= 500);
 
-    BOOL replyComplete = (self.sawFinish && self.gotText);   // finishReason was received: nothing is missing
-    if (!self.cancelled && (error == nil || replyComplete) && !isRateLimitOrOverload && self.status == 200 && (self.inStreamErrorStatus == 0)) {
+    if (!self.cancelled && error == nil && !isRateLimitOrOverload && self.status == 200 && (self.inStreamErrorStatus == 0)) {
         self.finished = YES;
         if (!self.useStreaming) [self processWholeBody];
         [self.session finishTasksAndInvalidate];
@@ -379,13 +359,22 @@ didReceiveResponse:(NSURLResponse *)response
         if (self.onUsage && (self.inputTokenUsage > 0 || self.outputTokenUsage > 0)) {
             self.onUsage(self.inputTokenUsage, self.outputTokenUsage);
         }
-        NSString *okDetail = self.hitMaxTokens ? @"__OUTPUT_LIMIT_REACHED__" : nil;
         void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
         self.onDelta = nil;
         self.onImage = nil;
         self.onUsage = nil;
         self.onFinish = nil;
-        if (finish) finish(GeminiStreamErrorNone, self.status, okDetail);
+        // A live stream that closed without a final chunk (finishReason) was cut short: the chat continues the reply.
+        BOOL cutShort = self.useStreaming && self.lastFinishReason.length == 0;
+        // The length limit stopped the reply: the chat asks for the rest.
+        BOOL hitLimit = [self.lastFinishReason isEqualToString:@"MAX_TOKENS"];
+        if (cutShort) {
+            if (finish) finish(GeminiStreamErrorNetwork, self.status, kStreamEndedEarlyMarker);
+        } else if (hitLimit) {
+            if (finish) finish(GeminiStreamErrorNone, self.status, kStreamOutputLimitMarker);
+        } else {
+            if (finish) finish(GeminiStreamErrorNone, self.status, nil);
+        }
         return;
     }
 
@@ -403,27 +392,20 @@ didReceiveResponse:(NSURLResponse *)response
         return;
     }
 
-    // Quick failures before any text (overload, a dropped connection) are retried a few times here. A request that simply
-    // timed out or went silent is NOT retried here (each wait is minutes long): the chat falls back to a single request.
-    NSInteger maxRetries = self.useFastSpeed ? 2 : 3;
-    double maxBackoff = 6.0;
-    BOOL quickTransportFailure = (error != nil && self.status == 0 &&
-                                  error.code != NSURLErrorCancelled && error.code != NSURLErrorTimedOut);
-    if (!self.gotText && (isRateLimitOrOverload || quickTransportFailure)) {
-        BOOL retryable = YES;
-        NSTimeInterval serverHint = 0;
-        if (isRateLimitOrOverload) {
-            serverHint = MAX(self.retryAfterSeconds, [self retryDelayFromErrorBody:self.errorBody]);
-            BOOL rateLimited = (self.status == 429 || self.inStreamErrorStatus == 429);
-            // A daily/billing quota will not clear in seconds, and a long Retry-After is better shown than waited out blindly.
-            if (rateLimited && ([self quotaLooksPermanent] || serverHint > 20.0)) retryable = NO;
-            serverHint = MIN(serverHint, 20.0);
-        }
-        if (retryable && self.sameKeyRetryCount < maxRetries) {
+    // Chỉ retry tự động khi chưa nhận được chữ (`!self.gotText`) để tránh lặp lại đoạn đã stream
+    NSInteger maxRetries = self.useFastSpeed ? 8 : 12;
+    double maxBackoff = self.useFastSpeed ? 6.0 : 12.0;
+    // A timeout means no bytes arrived for the whole idle window (common while the model is still thinking).
+    // Retrying it silently only repeats the same long wait, so it fails at once with a clear message instead.
+    BOOL timedOut = (error != nil && error.code == NSURLErrorTimedOut);
+    BOOL networkDrop = (error != nil && self.status == 0 && error.code != NSURLErrorCancelled && !timedOut);
+    NSInteger retryLimit = isRateLimitOrOverload ? maxRetries : MIN(maxRetries, 3);
+    if (!stallGaveUp && !self.gotText && (isRateLimitOrOverload || networkDrop)) {
+        if (self.sameKeyRetryCount < retryLimit) {
             self.sameKeyRetryCount++;
-            NSTimeInterval backoffDelay = MIN(pow(1.45, self.sameKeyRetryCount), maxBackoff);
-            NSTimeInterval jitter = (double)(arc4random_uniform(350)) / 1000.0;
-            NSTimeInterval totalWait = MAX(backoffDelay + jitter, serverHint);
+            NSTimeInterval backoffDelay = MIN(pow(1.6, self.sameKeyRetryCount), maxBackoff);
+            NSTimeInterval jitter = (double)(arc4random_uniform(500)) / 1000.0;
+            NSTimeInterval totalWait = backoffDelay + jitter;
 
             [self.session invalidateAndCancel];
             self.session = nil;
@@ -448,12 +430,8 @@ didReceiveResponse:(NSURLResponse *)response
     GeminiStreamError result = GeminiStreamErrorNone;
     NSString *detail = nil;
 
-    if (error != nil && !self.gotText) {
-        result = GeminiStreamErrorNetwork;
-        detail = [NSString stringWithFormat:@"%@ [%@ %ld]", error.localizedDescription, error.domain, (long)error.code];
-    } else if (error != nil && self.gotText && self.status == 200) {
-        // The connection broke after part of the reply arrived. Reporting it lets the chat keep what was received and
-        // continue the reply automatically (ChatViewController "interruptedMidStream"), instead of silently cutting it off.
+    if (error != nil) {
+        // Also when text already arrived: the chat keeps the partial reply and continues it.
         result = GeminiStreamErrorNetwork;
         detail = [NSString stringWithFormat:@"%@ [%@ %ld]", error.localizedDescription, error.domain, (long)error.code];
     } else if (self.status != 200 && !self.gotText) {
@@ -465,6 +443,9 @@ didReceiveResponse:(NSURLResponse *)response
     } else if (self.inStreamErrorStatus != 0 && !self.gotText) {
         detail = self.inStreamErrorMessage;
         result = [GeminiStream errorForStatus:self.inStreamErrorStatus message:self.inStreamErrorMessage];
+    } else if (self.inStreamErrorStatus != 0 && self.gotText) {
+        detail = self.inStreamErrorMessage;   // error after part of the reply: the chat keeps it and continues
+        result = GeminiStreamErrorServer;
     } else if (!self.gotText) {
         result = self.blockReason.length > 0 ? GeminiStreamErrorBlocked : GeminiStreamErrorEmptyReply;
         detail = self.blockReason;
@@ -484,55 +465,22 @@ didReceiveResponse:(NSURLResponse *)response
 
 #pragma mark - SSE parsing
 
-- (void)compactReadBufferIfNeeded:(BOOL)force {
-    if (self.bufferReadOffset == 0) return;
-    if (force || self.bufferReadOffset >= 65536 || self.bufferReadOffset >= self.buffer.length / 2) {
-        NSUInteger remaining = self.buffer.length > self.bufferReadOffset ? (self.buffer.length - self.bufferReadOffset) : 0;
-        if (remaining > 0) {
-            memmove(self.buffer.mutableBytes, (const uint8_t *)self.buffer.bytes + self.bufferReadOffset, remaining);
-        }
-        self.buffer.length = remaining;
-        self.bufferReadOffset = 0;
-    }
-}
-
 - (void)drainBufferFinal:(BOOL)final {
-    if (self.buffer.length <= self.bufferReadOffset) {
-        if (final) {
-            self.buffer.length = 0;
-            self.bufferReadOffset = 0;
-        }
-        return;
-    }
-    const uint8_t *bytes = self.buffer.bytes;
-    NSUInteger totalLen = self.buffer.length;
-    NSUInteger pos = self.bufferReadOffset;
-
-    while (pos < totalLen) {
-        const uint8_t *found = memchr(bytes + pos, '\n', totalLen - pos);
-        if (!found) break;
-        NSUInteger lineEnd = (NSUInteger)(found - bytes);
-        NSUInteger lineLen = lineEnd > pos ? (lineEnd - pos) : 0;
-        NSData *lineData = [NSData dataWithBytesNoCopy:(void *)(bytes + pos) length:lineLen freeWhenDone:NO];
+    NSData *newline = [NSData dataWithBytes:"\n" length:1];
+    while (YES) {
+        NSRange range = [self.buffer rangeOfData:newline options:0 range:NSMakeRange(0, self.buffer.length)];
+        if (range.location == NSNotFound) break;
+        NSData *lineData = [self.buffer subdataWithRange:NSMakeRange(0, range.location)];
+        [self.buffer replaceBytesInRange:NSMakeRange(0, range.location + 1) withBytes:NULL length:0];
         [self processLineData:lineData];
-        pos = lineEnd + 1;
     }
-
-    self.bufferReadOffset = pos;
-    if (final && self.bufferReadOffset < self.buffer.length) {
-        NSData *tailData = [NSData dataWithBytesNoCopy:(void *)(bytes + self.bufferReadOffset)
-                                                length:(self.buffer.length - self.bufferReadOffset)
-                                          freeWhenDone:NO];
-        [self processLineData:tailData];
+    if (final && self.buffer.length > 0) {
+        [self processLineData:[self.buffer copy]];
         self.buffer.length = 0;
-        self.bufferReadOffset = 0;
-    } else {
-        [self compactReadBufferIfNeeded:final];
     }
 }
 
 - (void)processLineData:(NSData *)lineData {
-    if (lineData.length < 6) return;
     NSString *line = [[NSString alloc] initWithData:lineData encoding:NSUTF8StringEncoding];
     if (line == nil) return;
     line = [line stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\r"]];
@@ -541,9 +489,7 @@ didReceiveResponse:(NSURLResponse *)response
     NSString *payload = [[line substringFromIndex:5] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     if (payload.length == 0 || [payload isEqualToString:@"[DONE]"]) return;
 
-    NSData *payloadData = [payload dataUsingEncoding:NSUTF8StringEncoding];
-    if (!payloadData) return;
-    id json = [NSJSONSerialization JSONObjectWithData:payloadData options:0 error:nil];
+    id json = [NSJSONSerialization JSONObjectWithData:[payload dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if (![json isKindOfClass:[NSDictionary class]]) return;
     [self processChunk:json];
 }
@@ -577,7 +523,6 @@ didReceiveResponse:(NSURLResponse *)response
         BOOL isThought = [part[@"thought"] respondsToSelector:@selector(boolValue)] && [part[@"thought"] boolValue];
         NSString *text = part[@"text"];
         if (!isThought && [text isKindOfClass:[NSString class]] && text.length > 0) {
-            if (!self.gotText) self.watchdog.idleLimit = kMidStreamIdleLimit;
             self.gotText = YES;
             if (self.onDelta) self.onDelta(text);
         }
@@ -587,7 +532,6 @@ didReceiveResponse:(NSURLResponse *)response
         if ([mime hasPrefix:@"image/"] && encoded.length > 0) {
             NSData *imageData = [[NSData alloc] initWithBase64EncodedString:encoded options:NSDataBase64DecodingIgnoreUnknownCharacters];
             if (imageData.length > 0) {
-                if (!self.gotText) self.watchdog.idleLimit = kMidStreamIdleLimit;
                 self.gotText = YES;
                 if (self.onImage) self.onImage(imageData, mime);
             }
@@ -595,10 +539,7 @@ didReceiveResponse:(NSURLResponse *)response
     }
 
     NSString *finishReason = [candidate[@"finishReason"] isKindOfClass:[NSString class]] ? candidate[@"finishReason"] : nil;
-    if (finishReason.length > 0) self.sawFinish = YES;
-    if ([finishReason isEqualToString:@"MAX_TOKENS"]) {
-        self.hitMaxTokens = YES;
-    }
+    if (finishReason.length > 0) self.lastFinishReason = finishReason;
     if (finishReason.length > 0 && !self.gotText) {
         NSArray *blocking = @[@"SAFETY", @"PROHIBITED_CONTENT", @"BLOCKLIST", @"SPII", @"RECITATION", @"IMAGE_SAFETY"];
         if ([blocking containsObject:finishReason]) self.blockReason = finishReason;
@@ -665,14 +606,6 @@ didReceiveResponse:(NSURLResponse *)response
         }
     }
     return 0;
-}
-
-- (BOOL)quotaLooksPermanent {
-    NSString *message = [[self messageFromErrorBody:self.errorBody] lowercaseString] ?: @"";
-    for (NSString *word in @[@"per day", @"perday", @"daily", @"per month", @"billing", @"spend limit"]) {
-        if ([message containsString:word]) return YES;
-    }
-    return NO;
 }
 
 + (GeminiStreamError)errorForStatus:(NSInteger)status message:(NSString *)message {

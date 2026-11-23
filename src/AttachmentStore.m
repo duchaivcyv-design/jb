@@ -8,64 +8,18 @@
 const NSInteger  kMaxAttachmentsPerMessage = 25;
 const NSUInteger kMaxInlineBytesPerMessage = 13 * 1024 * 1024;   // base64 adds a third: ~17.4 MB of the 20 MB request cap
 
-// Ép mạnh ảnh & video để tiết kiệm dung lượng/token tối đa
-static const CGFloat    kImageMaxSide      = 1024;
-static const CGFloat    kThumbMaxSide      = 128;
+static const CGFloat    kImageMaxSide      = 1440;                 // Gemini scales anything larger down anyway
+static const CGFloat    kThumbMaxSide      = 160;
 static const NSUInteger kMaxPDFBytes       = 10 * 1024 * 1024;
 static const NSUInteger kMaxOfficeBytes    = 15 * 1024 * 1024;     // .docx / .pptx archive size
 static const NSUInteger kMaxImageFileBytes = 40 * 1024 * 1024;
 static const unsigned long long kMaxVideoFileBytes = 100ULL * 1024ULL * 1024ULL;
 static const NSTimeInterval kMaxVideoDuration = 120.0;
-static const NSUInteger kMaxVideoFrames = 4;
-
-// Ép trần cực cao theo yêu cầu (1 tỷ ký tự / 1GB) kết hợp streaming tránh OOM
-const NSUInteger kMaxTextFileBytes  = 1024ULL * 1024ULL * 1024ULL;
-const NSUInteger kMaxTextChars      = 1000000000ULL;               // 1 tỷ ký tự
-static const unsigned long long kMaxZipFileBytes = 500ULL * 1024ULL * 1024ULL;
-static const NSUInteger kStreamWriteChunkBytes = 1024 * 1024;      // Ghi từng khối 1MB
-
-// Ép mạnh chuỗi: gộp dòng trống liên tiếp (tối đa 1 dòng trống) và gộp nhiều space/tab liên tiếp thành 1 space
-static NSString *CompactTextAggressive(NSString *input, NSUInteger maxChars) {
-    if (!input || input.length == 0) return @"";
-    NSUInteger limit = MIN(input.length, maxChars);
-    NSRange safeRange = [input rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, limit)];
-    NSString *src = [input substringWithRange:safeRange];
-
-    NSMutableString *out = [NSMutableString stringWithCapacity:MIN(src.length, (NSUInteger)(src.length * 0.75))];
-    BOOL prevNewline = NO;
-    BOOL prevSpace = NO;
-
-    for (NSUInteger i = 0; i < src.length; i++) {
-        unichar ch = [src characterAtIndex:i];
-        if (ch == '\r') {
-            continue;
-        }
-        if (ch == '\n') {
-            if (!prevNewline) {
-                // Xóa space thừa ngay trước xuống dòng
-                while (out.length > 0 && [out characterAtIndex:out.length - 1] == ' ') {
-                    [out deleteCharactersInRange:NSMakeRange(out.length - 1, 1)];
-                }
-                [out appendString:@"\n"];
-                prevNewline = YES;
-                prevSpace = NO;
-            }
-            continue;
-        }
-        if (ch == ' ' || ch == '\t') {
-            if (!prevSpace && !prevNewline) {
-                [out appendString:@" "];
-                prevSpace = YES;
-            }
-            continue;
-        }
-        [out appendFormat:@"%C", ch];
-        prevNewline = NO;
-        prevSpace = NO;
-    }
-
-    return [out stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-}
+static const NSUInteger kMaxVideoFrames = 6;
+const NSUInteger kMaxTextFileBytes  = 256 * 1024 * 1024;    // Hỗ trợ file log/code/txt lớn (~1 triệu dòng+)
+const NSUInteger kMaxTextChars      = 50 * 1024 * 1024;     // Cho phép lưu tới 50 triệu ký tự, không cắt ngang file 1 triệu dòng
+static const unsigned long long kMaxZipFileBytes = 100ULL * 1024ULL * 1024ULL;
+static const NSUInteger kStreamWriteChunkBytes = 1024 * 1024;      // Ghi file theo từng khối 1MB để tránh spike RAM
 
 static NSString *RootDir(void) {
     static NSString *dir = nil;
@@ -78,6 +32,7 @@ static NSString *RootDir(void) {
     return dir;
 }
 
+// Conversation ids and file names become path components, so refuse anything that could escape the folder.
 static BOOL SafeComponent(id value) {
     if (![value isKindOfClass:[NSString class]]) return NO;
     NSString *s = value;
@@ -97,14 +52,12 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
     @try {
         NSUInteger offset = 0;
         while (offset < utf8.length) {
-            @autoreleasepool {
-                NSUInteger len = MIN(kStreamWriteChunkBytes, utf8.length - offset);
-                NSData *chunk = [NSData dataWithBytesNoCopy:(void *)((const uint8_t *)utf8.bytes + offset)
-                                                     length:len
-                                               freeWhenDone:NO];
-                [handle writeData:chunk];
-                offset += len;
-            }
+            NSUInteger len = MIN(kStreamWriteChunkBytes, utf8.length - offset);
+            NSData *chunk = [NSData dataWithBytesNoCopy:(void *)((const uint8_t *)utf8.bytes + offset)
+                                                 length:len
+                                           freeWhenDone:NO];
+            [handle writeData:chunk];
+            offset += len;
         }
         [handle synchronizeFile];
         return YES;
@@ -177,6 +130,7 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
 
 #pragma mark - Images
 
+// Draws onto white (JPEG has no alpha) at no more than maxSide pixels on the long edge.
 + (NSData *)jpegFromImage:(UIImage *)image maxSide:(CGFloat)maxSide quality:(CGFloat)quality {
     CGSize size = image.size;
     if (size.width < 1 || size.height < 1) return nil;
@@ -193,6 +147,23 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
         [image drawInRect:CGRectMake(0, 0, target.width, target.height)];
     }];
     return UIImageJPEGRepresentation(flat, quality);
+}
+
++ (NSDictionary *)importFileData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey {
+    if (data.length == 0) { if (errorKey) *errorKey = @"att_err_empty"; return nil; }
+    if (data.length > 20 * 1024 * 1024) { if (errorKey) *errorKey = @"att_err_too_large"; return nil; }
+    NSString *dir = [self directoryForConversation:conversationId create:YES];
+    if (!dir) { if (errorKey) *errorKey = @"att_err_unreadable"; return nil; }
+    NSString *display = name.length > 0 ? name : @"tep.txt";
+    NSString *ext = [display pathExtension].lowercaseString;
+    NSString *attachmentId = [[NSUUID UUID] UUIDString];
+    NSString *file = ext.length > 0 ? [attachmentId stringByAppendingPathExtension:ext] : attachmentId;
+    if (![data writeToFile:[dir stringByAppendingPathComponent:file] options:NSDataWritingAtomic error:nil]) {
+        if (errorKey) *errorKey = @"att_err_unreadable";
+        return nil;
+    }
+    return @{ @"id": attachmentId, @"kind": @"file", @"name": display, @"mime": @"application/octet-stream",
+              @"file": file, @"bytes": @(data.length) };
 }
 
 + (NSDictionary *)importImageData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey {
@@ -212,9 +183,8 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
     UIImage *image = [UIImage imageWithCGImage:cgImage];
     CGImageRelease(cgImage);
 
-    // Ép chất lượng JPEG xuống 0.55 để giảm dung lượng
-    NSData *jpeg = [self jpegFromImage:image maxSide:kImageMaxSide quality:0.55];
-    NSData *thumb = [self jpegFromImage:image maxSide:kThumbMaxSide quality:0.55];
+    NSData *jpeg = [self jpegFromImage:image maxSide:kImageMaxSide quality:0.70];
+    NSData *thumb = [self jpegFromImage:image maxSide:kThumbMaxSide quality:0.7];
     if (jpeg.length == 0 || thumb.length == 0) { if (errorKey) *errorKey = @"att_err_unreadable"; return nil; }
 
     NSString *attachmentId = [[NSUUID UUID] UUIDString];
@@ -235,6 +205,7 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
     return [NSSet setWithObjects:@"jpg", @"jpeg", @"png", @"gif", @"heic", @"heif", @"webp", @"tif", @"tiff", @"bmp", nil];
 }
 
+// Formats Gemini cannot read and that we cannot unpack either: better to say so than to send garbage.
 + (NSSet *)unsupportedExtensions {
     return [NSSet setWithObjects:@"doc", @"xls", @"xlsx", @"ppt", @"odt", @"ods", @"odp", @"pages", @"numbers", @"key", @"rtf",
             @"rar", @"7z", @"mp3", @"m4a", @"wav", @"avi", @"exe", @"dmg", @"ipa", @"deb", nil];
@@ -247,7 +218,7 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
     BOOL utf16BOM = probe >= 2 && ((bytes[0] == 0xFF && bytes[1] == 0xFE) || (bytes[0] == 0xFE && bytes[1] == 0xFF));
     if (!utf16BOM) {
         for (NSUInteger i = 0; i < probe; i++) {
-            if (bytes[i] == 0) return nil;
+            if (bytes[i] == 0) return nil;   // NUL bytes trong vùng dò đầu: tệp nhị phân
         }
     }
     NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
@@ -265,9 +236,14 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
         if (errorKey) *errorKey = @"att_err_no_text";
         return nil;
     }
-
-    NSString *payload = CompactTextAggressive(text, kMaxTextChars);
-    if (payload.length == 0) {
+    NSString *payload = text;
+    if (payload.length > kMaxTextChars) {
+        NSRange safe = [payload rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, kMaxTextChars)];
+        payload = [payload substringWithRange:safe];
+    }
+    // Kiểm tra nhanh có ký tự không rỗng hay không mà không trim copy toàn bộ chuỗi 1 triệu dòng nếu không cần
+    NSCharacterSet *nonWhitespace = [[NSCharacterSet whitespaceAndNewlineCharacterSet] invertedSet];
+    if ([payload rangeOfCharacterFromSet:nonWhitespace].location == NSNotFound) {
         if (errorKey) *errorKey = @"att_err_no_text";
         return nil;
     }
@@ -323,29 +299,27 @@ static BOOL WriteUTF8StringToPath(NSString *string, NSString *filePath) {
 
     AVAssetImageGenerator *generator = [[AVAssetImageGenerator alloc] initWithAsset:asset];
     generator.appliesPreferredTrackTransform = YES;
-    generator.maximumSize = CGSizeMake(kImageMaxSide, kImageMaxSide);
-    NSUInteger frameCount = MIN(kMaxVideoFrames, MAX((NSUInteger)2, (NSUInteger)ceil(duration / 15.0)));
+    generator.maximumSize = CGSizeMake(1280, 1280);
+    NSUInteger frameCount = MIN(kMaxVideoFrames, MAX((NSUInteger)2, (NSUInteger)ceil(duration / 8.0)));
     NSString *attachmentId = [[NSUUID UUID] UUIDString];
     NSMutableArray *frameFiles = [NSMutableArray array];
     NSUInteger totalBytes = 0;
 
     for (NSUInteger i = 0; i < frameCount; i++) {
-        @autoreleasepool {
-            NSTimeInterval seconds = frameCount == 1 ? 0 : (duration - 0.05) * ((double)i / (double)(frameCount - 1));
-            NSError *frameError = nil;
-            CGImageRef cgImage = [generator copyCGImageAtTime:CMTimeMakeWithSeconds(MAX(0, seconds), 600)
-                                                   actualTime:NULL error:&frameError];
-            if (!cgImage) continue;
-            UIImage *image = [UIImage imageWithCGImage:cgImage];
-            CGImageRelease(cgImage);
-            NSData *jpeg = [self jpegFromImage:image maxSide:kImageMaxSide quality:0.55];
-            if (jpeg.length == 0) continue;
+        NSTimeInterval seconds = frameCount == 1 ? 0 : (duration - 0.05) * ((double)i / (double)(frameCount - 1));
+        NSError *frameError = nil;
+        CGImageRef cgImage = [generator copyCGImageAtTime:CMTimeMakeWithSeconds(MAX(0, seconds), 600)
+                                               actualTime:NULL error:&frameError];
+        if (!cgImage) continue;
+        UIImage *image = [UIImage imageWithCGImage:cgImage];
+        CGImageRelease(cgImage);
+        NSData *jpeg = [self jpegFromImage:image maxSide:1280 quality:0.72];
+        if (jpeg.length == 0) continue;
 
-            NSString *frameFile = [NSString stringWithFormat:@"%@_v%lu.jpg", attachmentId, (unsigned long)i];
-            if (![jpeg writeToFile:[dir stringByAppendingPathComponent:frameFile] options:NSDataWritingAtomic error:nil]) continue;
-            [frameFiles addObject:frameFile];
-            totalBytes += jpeg.length;
-        }
+        NSString *frameFile = [NSString stringWithFormat:@"%@_v%lu.jpg", attachmentId, (unsigned long)i];
+        if (![jpeg writeToFile:[dir stringByAppendingPathComponent:frameFile] options:NSDataWritingAtomic error:nil]) continue;
+        [frameFiles addObject:frameFile];
+        totalBytes += jpeg.length;
     }
 
     if (frameFiles.count == 0) {

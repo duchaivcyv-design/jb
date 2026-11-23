@@ -1,5 +1,6 @@
 #import "DiagnosticsViewController.h"
 #import "Strings.h"
+#import "ChoicePopupViewController.h"
 #import "Theme.h"
 #import "DiagnosticLog.h"
 
@@ -64,9 +65,9 @@
     NSString *text = [DiagnosticLog contents];
     if (text.length == 0) return;
     [UIPasteboard generalPasteboard].string = text;
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:nil message:L(@"copied") preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    ChoicePopupViewController *alert = [ChoicePopupViewController alertWithTitle:nil message:L(@"copied")];
+    [alert addAction:[ChoiceAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [alert presentFromViewController:self];
 }
 
 - (void)clearTapped {

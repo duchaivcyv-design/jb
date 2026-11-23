@@ -9,4 +9,7 @@
 @property (copy, nonatomic) NSString *initialText;
 @property (copy, nonatomic) void (^onSave)(NSString *text);
 
+// Puts the text of an instruction file (.clmn or .txt) into the editor (asks to replace or add when there is text already).
+- (void)importFromURL:(NSURL *)url;
+
 @end

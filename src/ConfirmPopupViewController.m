@@ -1,6 +1,7 @@
 #import "ConfirmPopupViewController.h"
 #import "Strings.h"
 #import "Theme.h"
+#import "Material.h"
 
 @interface ConfirmPopupViewController ()
 @property (copy, nonatomic) NSString *titleText;
@@ -31,11 +32,14 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithWhite:0 alpha:0.42];
+    self.view.backgroundColor = [UIColor clearColor];   // the blur below replaces the plain dimming
+    UIVisualEffectView *backdrop = [Theme backdropBlurView];
+    backdrop.frame = self.view.bounds;
+    [self.view addSubview:backdrop];
 
     self.card = [[UIView alloc] init];
     self.card.backgroundColor = [Theme background];
-    self.card.layer.cornerRadius = 24;
+    self.card.layer.cornerRadius = MR(24, 28);
     self.card.layer.borderWidth = 1;
     self.card.layer.borderColor = [Theme border].CGColor;
     self.card.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -73,7 +77,7 @@
     [self.cancelButton setTitle:L(@"cancel") forState:UIControlStateNormal];
     [self.cancelButton setTitleColor:[Theme accent] forState:UIControlStateNormal];
     self.cancelButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
-    self.cancelButton.layer.cornerRadius = 14;
+    self.cancelButton.layer.cornerRadius = MR(14, 24);
     self.cancelButton.layer.borderWidth = 1.5;
     self.cancelButton.layer.borderColor = [Theme accent].CGColor;
     [self.cancelButton addTarget:self action:@selector(cancelTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -84,7 +88,7 @@
     [self.confirmButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     self.confirmButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
     self.confirmButton.backgroundColor = [Theme accent];
-    self.confirmButton.layer.cornerRadius = 14;
+    self.confirmButton.layer.cornerRadius = MR(14, 24);
     [self.confirmButton addTarget:self action:@selector(confirmTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.card addSubview:self.confirmButton];
 
@@ -125,10 +129,16 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    if ([Material active]) { [Material presentDialogCard:self.card]; return; }
     self.card.transform = CGAffineTransformMakeScale(0.94, 0.94);
     [UIView animateWithDuration:0.28 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0 options:0 animations:^{
         self.card.transform = CGAffineTransformIdentity;
     } completion:nil];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [Material dismissDialogCard:self.card];
 }
 
 - (void)cancelTapped {

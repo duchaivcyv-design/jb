@@ -6,6 +6,7 @@
   --hl-kw: #A5472B; --hl-str: #3F7D58; --hl-com: #8A8677; --hl-num: #2F6B8C; --hl-title: #7B4FA2; --hl-attr: #B0731A;
   --uiscale: 1;
   --serif: Georgia, "Times New Roman", serif;
+  --ui-font: -apple-system, "Helvetica Neue", Helvetica, sans-serif;
 }
 html, body {
   margin: 0;
@@ -18,7 +19,7 @@ html, body {
 }
 body {
   color: var(--text);
-  font-family: -apple-system, "Helvetica Neue", Helvetica, sans-serif;
+  font-family: var(--ui-font);
   font-size: calc(16px * var(--uiscale));
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
@@ -200,7 +201,7 @@ body {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--sec);
-  font-family: -apple-system, "Helvetica Neue", Helvetica, sans-serif;
+  font-family: var(--ui-font);
   font-size: calc(13px * var(--uiscale));
   padding: calc(5px * var(--uiscale)) calc(11px * var(--uiscale));
   margin: 0 calc(6px * var(--uiscale)) 0 0;
@@ -368,7 +369,7 @@ html.is-empty, html.is-empty body { overflow: hidden; height: 100%; overscroll-b
   padding: calc(5px * var(--uiscale)) calc(8px * var(--uiscale)) calc(5px * var(--uiscale)) calc(12px * var(--uiscale));
   border-bottom: 1px solid var(--border);
   background: var(--sel);
-  font-family: -apple-system, "Helvetica Neue", Helvetica, sans-serif;
+  font-family: var(--ui-font);
 }
 .md .codehead .lang { font-size: calc(12px * var(--uiscale)); color: var(--sec); text-transform: lowercase; }
 .md .codehead .act { padding: calc(3px * var(--uiscale)) calc(9px * var(--uiscale)); margin: 0; font-size: calc(12px * var(--uiscale)); }
