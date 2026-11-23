@@ -93,11 +93,7 @@ static NSMutableDictionary *KeyCache(void) {
 + (BOOL)saveKey:(NSString *)key forProvider:(AIProvider)provider {
     if (key.length == 0) return NO;
     [self forgetCachedKeyForProvider:provider];
-    if (provider == AIProviderGemini) {
-        [KeyTier invalidateGeminiDetection];   // a new key may be free or paid: detect again
-        // Saving an API key means the person wants to use it now, not the Google account.
-        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kGeminiGoogleModeKey];
-    }
+    if (provider == AIProviderGemini) [KeyTier invalidateGeminiDetection];   // a new key may be free or paid: detect again
     NSData *data = [key dataUsingEncoding:NSUTF8StringEncoding];
 
     SecItemDelete((__bridge CFDictionaryRef)[self baseQueryFor:provider]);

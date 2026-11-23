@@ -564,15 +564,9 @@ static NSString *GoogleSignedInTitle(void) {
                 }
                 break;
             }
-            case GeminiCheckInvalidKey: {
-                NSString *base = L(@"status_invalid");
-                if (strongSelf.provider == AIProviderGemini && [key hasPrefix:@"AQ."]) {
-                    base = L(@"key_aq_prefix");   // new AI Studio key type: the Gemini API refuses it
-                }
-                NSString *reason = strongSelf.provider == AIProviderGemini ? [GeminiClient lastVerifyErrorMessage] : nil;
-                [strongSelf setStatus:(reason.length > 0 ? [base stringByAppendingFormat:@"\n%@", reason] : base) kind:StatusError];
+            case GeminiCheckInvalidKey:
+                [strongSelf setStatus:L(@"status_invalid") kind:StatusError];
                 break;
-            }
             case GeminiCheckRateLimited:
                 [strongSelf setStatus:L(@"status_rate") kind:StatusError];
                 break;

@@ -1,62 +1,67 @@
 #import "GeminiClient.h"
 #import "KeyStore.h"
-#import "DiagnosticLog.h"
-
-static NSString *gLastVerifyError = nil;
 
 static NSString *const kGeminiModelsURL = @"https://generativelanguage.googleapis.com/v1beta/models";
+static const NSInteger kMaxModelPages = 10;
 
-static BOOL KeyLooksUsable(NSString *key) {
-    // A header value must be plain visible ASCII; anything else cannot be a real key.
-    BOOL asciiOnly = [key canBeConvertedToEncoding:NSASCIIStringEncoding];
-    BOOL hasSpace = [key rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].location != NSNotFound;
-    return key.length > 0 && asciiOnly && !hasSpace;
+static NSString *NormalizedKey(NSString *key) {
+    if (![key isKindOfClass:[NSString class]]) return nil;
+    NSString *trimmed = [key stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    BOOL asciiOnly = [trimmed canBeConvertedToEncoding:NSASCIIStringEncoding];
+    BOOL hasInnerSpace = [trimmed rangeOfCharacterFromSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].location != NSNotFound;
+    if (trimmed.length == 0 || !asciiOnly || hasInnerSpace) return nil;
+    return trimmed;
 }
 
 static GeminiCheckResult ResultForStatus(NSInteger status) {
     if (status == 200) return GeminiCheckOK;
     if (status == 400 || status == 401 || status == 403) return GeminiCheckInvalidKey;
     if (status == 429) return GeminiCheckRateLimited;
+    if (status >= 500) return GeminiCheckNetworkError;
     return GeminiCheckUnknown;
+}
+
+static NSMutableURLRequest *ModelsRequest(NSString *key, NSString *pageToken) {
+    NSMutableString *urlString = [NSMutableString stringWithFormat:@"%@?pageSize=1000", kGeminiModelsURL];
+    if (pageToken.length > 0) {
+        NSString *escaped = [pageToken stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        [urlString appendFormat:@"&pageToken=%@", escaped];
+    }
+    NSMutableURLRequest *request =
+        [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
+                                cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
+                            timeoutInterval:15.0];
+    request.HTTPMethod = @"GET";
+    [KeyStore applyGeminiCredential:key toRequest:request];
+    return request;
 }
 
 @implementation GeminiClient
 
-+ (NSString *)lastVerifyErrorMessage {
-    return gLastVerifyError;
-}
-
 #pragma mark - Key check
 
 + (void)verifyKey:(NSString *)key completion:(GeminiVerifyCompletion)completion {
-    if (!KeyLooksUsable(key)) {
-        gLastVerifyError = @"Key còn chứa khoảng trắng hoặc ký tự lạ nên chưa gửi lên Google. Xóa ô nhập rồi dán lại key.";
-        [DiagnosticLog log:@"gemini key rejected locally: contains non-ASCII or spaces (length %lu)", (unsigned long)key.length];
+    NSString *cleanKey = NormalizedKey(key);
+    if (!cleanKey) {
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(GeminiCheckInvalidKey, 0, 0);
         });
         return;
     }
+    [self verifyKey:cleanKey attempt:0 completion:completion];
+}
 
-    NSString *urlString = [kGeminiModelsURL stringByAppendingString:@"?pageSize=200"];
-    NSMutableURLRequest *request =
-        [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
-                                cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                            timeoutInterval:20];
-    request.HTTPMethod = @"GET";
-    [KeyStore applyGeminiCredential:key toRequest:request];
-
++ (void)verifyKey:(NSString *)cleanKey attempt:(NSInteger)attempt completion:(GeminiVerifyCompletion)completion {
     NSURLSessionDataTask *task =
-        [[NSURLSession sharedSession] dataTaskWithRequest:request
+        [[NSURLSession sharedSession] dataTaskWithRequest:ModelsRequest(cleanKey, nil)
                                         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         GeminiCheckResult result = GeminiCheckUnknown;
         NSInteger count = 0;
-        NSInteger status = 0;
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
 
         if (error != nil) {
             result = GeminiCheckNetworkError;
         } else {
-            status = [(NSHTTPURLResponse *)response statusCode];
             result = ResultForStatus(status);
             if (result == GeminiCheckOK) {
                 id json = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
@@ -64,22 +69,29 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
                 if ([models isKindOfClass:[NSArray class]]) {
                     for (id model in models) {
                         if (![model isKindOfClass:[NSDictionary class]]) continue;
+                        NSString *name = [model[@"name"] isKindOfClass:[NSString class]] ? model[@"name"] : @"";
+                        NSString *modelId = [name hasPrefix:@"models/"] ? [name substringFromIndex:7] : name;
                         NSArray *methods = model[@"supportedGenerationMethods"];
-                        if ([methods isKindOfClass:[NSArray class]] && [methods containsObject:@"generateContent"]) count++;
+                        if ([methods isKindOfClass:[NSArray class]] &&
+                            [methods containsObject:@"generateContent"] &&
+                            [self isChatModelId:modelId]) {
+                            count++;
+                        }
                     }
                 }
             }
         }
 
+        BOOL shouldRetry = (result == GeminiCheckNetworkError || result == GeminiCheckRateLimited) && attempt < 2;
+        if (shouldRetry) {
+            NSTimeInterval delay = 0.4 * (attempt + 1);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self verifyKey:cleanKey attempt:attempt + 1 completion:completion];
+            });
+            return;
+        }
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            gLastVerifyError = nil;
-            if (result != GeminiCheckOK && data.length > 0) {
-                id body = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-                NSDictionary *errorInfo = [body isKindOfClass:[NSDictionary class]] ? body[@"error"] : nil;
-                NSString *message = [errorInfo isKindOfClass:[NSDictionary class]] ? errorInfo[@"message"] : nil;
-                if ([message isKindOfClass:[NSString class]]) gLastVerifyError = [message copy];
-                [DiagnosticLog log:@"gemini key check failed: http=%ld message=%@", (long)status, message ?: @"-"];
-            }
             completion(result, count, status);
         });
     }];
@@ -99,42 +111,50 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
 }
 
 + (void)fetchModelsWithKey:(NSString *)key completion:(GeminiModelsCompletion)completion {
-    if (!KeyLooksUsable(key)) {
+    NSString *cleanKey = NormalizedKey(key);
+    if (!cleanKey) {
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(@[], GeminiCheckInvalidKey);
         });
         return;
     }
-    [self fetchPageWithToken:nil key:key collected:[NSMutableArray array] depth:0 completion:completion];
+    [self fetchPageWithToken:nil
+                         key:cleanKey
+                   collected:[NSMutableArray array]
+                        seen:[NSMutableSet set]
+                       depth:0
+                     attempt:0
+                  completion:completion];
 }
 
 + (void)fetchPageWithToken:(NSString *)pageToken
                        key:(NSString *)key
                  collected:(NSMutableArray *)collected
+                      seen:(NSMutableSet *)seen
                      depth:(NSInteger)depth
+                   attempt:(NSInteger)attempt
                 completion:(GeminiModelsCompletion)completion {
-    NSMutableString *urlString = [NSMutableString stringWithString:[kGeminiModelsURL stringByAppendingString:@"?pageSize=200"]];
-    if (pageToken.length > 0) {
-        NSString *escaped = [pageToken stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
-        [urlString appendFormat:@"&pageToken=%@", escaped];
-    }
-    NSMutableURLRequest *request =
-        [NSMutableURLRequest requestWithURL:[NSURL URLWithString:urlString]
-                                cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
-                            timeoutInterval:20];
-    request.HTTPMethod = @"GET";
-    [KeyStore applyGeminiCredential:key toRequest:request];
-
     NSURLSessionDataTask *task =
-        [[NSURLSession sharedSession] dataTaskWithRequest:request
+        [[NSURLSession sharedSession] dataTaskWithRequest:ModelsRequest(key, pageToken)
                                         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (error != nil) {
-            dispatch_async(dispatch_get_main_queue(), ^{ completion(@[], GeminiCheckNetworkError); });
-            return;
-        }
-        NSInteger status = [(NSHTTPURLResponse *)response statusCode];
-        GeminiCheckResult result = ResultForStatus(status);
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        GeminiCheckResult result = (error != nil) ? GeminiCheckNetworkError : ResultForStatus(status);
+
         if (result != GeminiCheckOK) {
+            BOOL shouldRetry = (result == GeminiCheckNetworkError || result == GeminiCheckRateLimited) && attempt < 2;
+            if (shouldRetry) {
+                NSTimeInterval delay = 0.4 * (attempt + 1);
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [self fetchPageWithToken:pageToken
+                                         key:key
+                                   collected:collected
+                                        seen:seen
+                                       depth:depth
+                                     attempt:attempt + 1
+                                  completion:completion];
+                });
+                return;
+            }
             dispatch_async(dispatch_get_main_queue(), ^{ completion(@[], result); });
             return;
         }
@@ -147,9 +167,12 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
             NSString *name = item[@"name"];
             if (![name isKindOfClass:[NSString class]] || ![name hasPrefix:@"models/"]) continue;
             NSString *modelId = [name substringFromIndex:7];
+            if ([seen containsObject:modelId]) continue;
             NSArray *methods = item[@"supportedGenerationMethods"];
             if (![methods isKindOfClass:[NSArray class]] || ![methods containsObject:@"generateContent"]) continue;
             if (![self isChatModelId:modelId]) continue;
+            [seen addObject:modelId];
+
             NSString *display = [item[@"displayName"] isKindOfClass:[NSString class]] ? item[@"displayName"] : modelId;
             NSMutableDictionary *model = [@{ @"id": modelId, @"name": display } mutableCopy];
             id outputLimit = item[@"outputTokenLimit"];
@@ -160,13 +183,19 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
         }
 
         NSString *next = [root[@"nextPageToken"] isKindOfClass:[NSString class]] ? root[@"nextPageToken"] : nil;
-        if (next.length > 0 && depth < 4) {
-            [self fetchPageWithToken:next key:key collected:collected depth:depth + 1 completion:completion];
+        if (next.length > 0 && depth < kMaxModelPages) {
+            [self fetchPageWithToken:next
+                                 key:key
+                           collected:collected
+                                seen:seen
+                               depth:depth + 1
+                             attempt:0
+                          completion:completion];
             return;
         }
 
         NSArray *sorted = [collected sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-            return [b[@"id"] compare:a[@"id"] options:NSNumericSearch];   // newest/highest first
+            return [b[@"id"] compare:a[@"id"] options:NSNumericSearch];
         }];
         dispatch_async(dispatch_get_main_queue(), ^{ completion(sorted, GeminiCheckOK); });
     }];
