@@ -1,5 +1,8 @@
 #import "GeminiClient.h"
 #import "KeyStore.h"
+#import "DiagnosticLog.h"
+
+static NSString *gLastVerifyError = nil;
 
 static NSString *const kGeminiModelsURL = @"https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -19,10 +22,16 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
 
 @implementation GeminiClient
 
++ (NSString *)lastVerifyErrorMessage {
+    return gLastVerifyError;
+}
+
 #pragma mark - Key check
 
 + (void)verifyKey:(NSString *)key completion:(GeminiVerifyCompletion)completion {
     if (!KeyLooksUsable(key)) {
+        gLastVerifyError = @"Key còn chứa khoảng trắng hoặc ký tự lạ nên chưa gửi lên Google. Xóa ô nhập rồi dán lại key.";
+        [DiagnosticLog log:@"gemini key rejected locally: contains non-ASCII or spaces (length %lu)", (unsigned long)key.length];
         dispatch_async(dispatch_get_main_queue(), ^{
             completion(GeminiCheckInvalidKey, 0, 0);
         });
@@ -63,6 +72,14 @@ static GeminiCheckResult ResultForStatus(NSInteger status) {
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
+            gLastVerifyError = nil;
+            if (result != GeminiCheckOK && data.length > 0) {
+                id body = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                NSDictionary *errorInfo = [body isKindOfClass:[NSDictionary class]] ? body[@"error"] : nil;
+                NSString *message = [errorInfo isKindOfClass:[NSDictionary class]] ? errorInfo[@"message"] : nil;
+                if ([message isKindOfClass:[NSString class]]) gLastVerifyError = [message copy];
+                [DiagnosticLog log:@"gemini key check failed: http=%ld message=%@", (long)status, message ?: @"-"];
+            }
             completion(result, count, status);
         });
     }];

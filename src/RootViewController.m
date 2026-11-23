@@ -509,7 +509,7 @@ static NSString *GoogleSignedInTitle(void) {
 - (void)pasteTapped {
     NSString *clip = [UIPasteboard generalPasteboard].string;
     if (clip.length > 0) {
-        self.keyField.text = [clip stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        self.keyField.text = ApiKeyFromText(clip);
         [self updateButtonTitle];
     }
 }
@@ -520,12 +520,33 @@ static NSString *GoogleSignedInTitle(void) {
     [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
+// A Gemini key is plain ASCII letters, digits, '-' and '_'. Anything else copied with it (spaces, line breaks,
+// invisible or non-Latin characters) is dropped, so the key that is checked is the key itself.
+static NSString *CleanKeyText(NSString *text) {
+    if (![text isKindOfClass:[NSString class]]) return @"";
+    NSCharacterSet *plainAscii = [NSCharacterSet characterSetWithRange:NSMakeRange(0x21, 0x5E)];   // ! to ~
+    return [[text componentsSeparatedByCharactersInSet:[plainAscii invertedSet]] componentsJoinedByString:@""];
+}
+
+// Takes the API key itself (starts with "AIza") out of whatever was pasted, so extra text or invisible
+// characters around it do not make the key invalid.
+static NSString *ApiKeyFromText(NSString *text) {
+    NSString *cleaned = CleanKeyText(text);
+    NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"AIza[0-9A-Za-z_\\-]+" options:0 error:nil];
+    NSTextCheckingResult *match = [pattern firstMatchInString:cleaned options:0 range:NSMakeRange(0, cleaned.length)];
+    return match ? [cleaned substringWithRange:match.range] : cleaned;
+}
+
 - (void)verifyTapped {
     if (self.busy) return;
     [self.view endEditing:YES];
 
-    NSString *typed = [self.keyField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *typed = ApiKeyFromText(self.keyField.text);
     BOOL fromField = typed.length > 0;
+    if (fromField && self.provider == AIProviderGemini && ![typed hasPrefix:@"AIza"]) {
+        [self setStatus:L(@"key_not_found") kind:StatusError];
+        return;
+    }
     NSString *key = fromField ? typed : [KeyStore loadKeyForProvider:self.provider];
     if (key.length == 0) {
         [self setStatus:L(@"status_empty") kind:StatusError];
@@ -562,9 +583,12 @@ static NSString *GoogleSignedInTitle(void) {
                 }
                 break;
             }
-            case GeminiCheckInvalidKey:
-                [strongSelf setStatus:L(@"status_invalid") kind:StatusError];
+            case GeminiCheckInvalidKey: {
+                NSString *base = L(@"status_invalid");
+                NSString *reason = strongSelf.provider == AIProviderGemini ? [GeminiClient lastVerifyErrorMessage] : nil;
+                [strongSelf setStatus:(reason.length > 0 ? [base stringByAppendingFormat:@"\n%@", reason] : base) kind:StatusError];
                 break;
+            }
             case GeminiCheckRateLimited:
                 [strongSelf setStatus:L(@"status_rate") kind:StatusError];
                 break;

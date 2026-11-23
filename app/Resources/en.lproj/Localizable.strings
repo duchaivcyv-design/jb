@@ -377,3 +377,6 @@
 // Thinking time (0.8.0)
 "thinking_seconds" = "Thinking… %ld s";
 "thinking_minutes" = "Thinking… %ld min %ld s";
+
+// Key paste check (0.8.0)
+"key_not_found" = "No API key (starting with AIza) was found in the pasted text. Copy the key again from aistudio.google.com.";

@@ -378,3 +378,6 @@
 // Thinking time (0.8.0)
 "thinking_seconds" = "Đang suy nghĩ… %ld giây";
 "thinking_minutes" = "Đang suy nghĩ… %ld phút %ld giây";
+
+// Key paste check (0.8.0)
+"key_not_found" = "Không thấy API key (bắt đầu bằng AIza) trong nội dung đã dán. Hãy copy lại key từ aistudio.google.com.";
