@@ -352,35 +352,3 @@
 "font_rounded" = "SF Rounded";
 "font_weight_title" = "Độ đậm chữ";
 "font_weight_normal" = "Bình thường";
-
-// Google sign-in and timeout message (0.8.0)
-"google_sign_in" = "Đăng nhập bằng Google";
-"google_or" = "hoặc";
-"google_signed_in_as" = "Đang dùng Google: %@";
-"google_signed_in_plain" = "Đang dùng tài khoản Google";
-"google_not_configured" = "Bản build này chưa cấu hình đăng nhập Google. Hãy dùng API key.";
-"google_failed" = "Đăng nhập Google không thành công: %@";
-"google_rejected" = "Đăng nhập Google được, nhưng Gemini chưa chấp nhận quyền truy cập (HTTP %ld). Đã đăng xuất Google. Hãy dùng API key hoặc thử lại sau.";
-"google_quota_note" = "Yêu cầu đi qua project Google Cloud gắn với bản build này, nên hạn mức tính theo project đó.";
-"google_sign_out" = "Đăng xuất Google";
-"google_sign_out_msg" = "Bạn sẽ phải đăng nhập lại bằng Google để dùng Gemini.";
-"err_timeout" = "Model không trả lời kịp thời gian chờ (thường do model suy nghĩ quá lâu). Thử hạ mức suy luận trong Cài đặt rồi gửi lại.";
-
-// In-app Google setup (0.8.0)
-"google_edit_hint" = "Giữ nút để sửa Client ID và Project ID.";
-"google_config_title" = "Cấu hình Google";
-"google_config_msg" = "Dán OAuth Client ID (dạng …apps.googleusercontent.com) và Project ID từ Google Cloud Console của bạn.";
-"google_config_client_placeholder" = "Client ID";
-"google_config_project_placeholder" = "Project ID (không bắt buộc)";
-"google_config_save" = "Lưu và đăng nhập";
-"google_bad_client_id" = "Client ID phải có dạng 123-abc.apps.googleusercontent.com";
-
-// Thinking time (0.8.0)
-"thinking_seconds" = "Đang suy nghĩ… %ld giây";
-"thinking_minutes" = "Đang suy nghĩ… %ld phút %ld giây";
-
-// Key paste check (0.8.0)
-"key_not_found" = "Không thấy API key (bắt đầu bằng AIza) trong nội dung đã dán. Hãy copy lại key từ aistudio.google.com.";
-
-// AQ. key explanation (0.8.0)
-"key_aq_prefix" = "Key bắt đầu bằng AQ. là loại key mới của AI Studio, và Gemini API đang từ chối loại này (lỗi 401). Hãy dùng key bắt đầu bằng AIza, hoặc đăng nhập bằng Google.";

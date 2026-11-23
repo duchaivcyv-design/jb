@@ -18,8 +18,6 @@ extern const NSUInteger kMaxTextChars;             // max characters stored for 
 // Import. On failure these return nil and set *errorKey to a Localizable.strings key. Safe to call off the main thread.
 + (NSDictionary *)importImageData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey;
 + (NSDictionary *)importDocumentAtURL:(NSURL *)url conversation:(NSString *)conversationId errorKey:(NSString **)errorKey;
-// A file the AI created (kind "file"). Shown as a chip; tapping it shares the file. Not sent back to the model.
-+ (NSDictionary *)importFileData:(NSData *)data name:(NSString *)name conversation:(NSString *)conversationId errorKey:(NSString **)errorKey;
 
 + (void)deleteAttachment:(NSDictionary *)attachment conversation:(NSString *)conversationId;
 + (NSString *)pathForFile:(NSString *)file conversation:(NSString *)conversationId;      // nil if the name is not safe

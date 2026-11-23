@@ -34,6 +34,7 @@ static const CGFloat kMaxInputHeight = 120;
 static const CGFloat kStripHeight = 64;
 static const CGFloat kToolsRowHeight = 0;
 static const NSUInteger kGreetingCount = 6;
+static const NSUInteger kForceMaxContextChars = 4000000;
 
 #pragma mark - Weak script handler
 
@@ -236,11 +237,6 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 
 @property (strong, nonatomic) NSMutableArray *pendingAttachments;
 @property (assign, nonatomic) NSInteger importsInFlight;
-@property (strong, nonatomic) NSTimer *thinkingTimer;
-@property (assign, nonatomic) BOOL toolsDisabledForReply;   // the provider refused search/code tools for this reply
-@property (assign, nonatomic) BOOL requestUsedTools;        // the current request carried a search or code tool
-@property (assign, nonatomic) BOOL searchAllowedForReply;   // search is on for the current request
-@property (assign, nonatomic) CFAbsoluteTime thinkingStart;
 @end
 
 @implementation ChatViewController
@@ -1196,7 +1192,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 - (void)reasoningSliderChanged:(UISlider *)slider {
     NSInteger level = (NSInteger)lrintf(slider.value);
     [AppSettings setReasoningLevel:(AIReasoningLevel)level];
-    NSArray *names = @[@"Thấp", @"Trung bình", @"Cao", @"Siêu cao", @"Tối đa"];
+    NSArray *names = @[@"Thấp", @"Trung bình", @"Cao", @"Siêu cao", @"MAX ×8"];
     self.reasoningValueLabel.text = names[(NSUInteger)level];
     [self updateToolButtons];
     [self pushStrings];
@@ -1430,7 +1426,6 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)stopDeltaFlushTimer {
-    [self stopThinkingTimer];
     [self flushPendingJSDelta];
     if (self.deltaFlushTimer) {
         dispatch_source_cancel(self.deltaFlushTimer);
@@ -1655,8 +1650,6 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     } else if ([type isEqualToString:@"save"]) {
         NSString *text = body[@"text"];
         if ([text isKindOfClass:[NSString class]] && text.length > 0) [self offerExportForText:text];
-    } else if ([type isEqualToString:@"file"]) {
-        [self shareFileForAttachmentId:body[@"id"]];
     } else if ([type isEqualToString:@"image"]) {
         [self showImageForAttachmentId:body[@"id"]];
     } else if ([type isEqualToString:@"shareImage"]) {
@@ -2793,7 +2786,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         }
     }
 
-    NSUInteger contextLimit = [AppSettings contextLimitChars];
+    NSUInteger contextLimit = MAX([AppSettings contextLimitChars], kForceMaxContextChars);
     AIProvider provider = [Provider forModelId:self.model];
     NSInteger inputTokenCap = [ModelStore maxInputTokensForModelId:self.model provider:provider];
     if (inputTokenCap > 0) {
@@ -2869,189 +2862,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     self.streamRetryCount = 0;
     self.didRecoverModel404 = NO;
     self.didFallbackFromFastMode = NO;
-    self.toolsDisabledForReply = NO;
     self.streaming = YES;
     [self updateSendButton];
     [self startDeltaFlushTimer];
     [self callJS:@"begin" args:@[]];
-    [self startThinkingTimer];
     [self launchRequestStreaming:YES];
-}
-
-- (void)startThinkingTimer {
-    [self stopThinkingTimer];
-    self.thinkingStart = CFAbsoluteTimeGetCurrent();
-    self.thinkingTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(tickThinking) userInfo:nil repeats:YES];
-    [self tickThinking];
-}
-
-- (void)stopThinkingTimer {
-    [self.thinkingTimer invalidate];
-    self.thinkingTimer = nil;
-}
-
-- (void)tickThinking {
-    NSInteger seconds = (NSInteger)(CFAbsoluteTimeGetCurrent() - self.thinkingStart);
-    NSString *text = seconds < 60
-        ? [NSString stringWithFormat:L(@"thinking_seconds"), (long)seconds]
-        : [NSString stringWithFormat:L(@"thinking_minutes"), (long)(seconds / 60), (long)(seconds % 60)];
-    [self callJS:@"setStatus" args:@[text]];
-}
-
-- (NSString *)lastUserText {
-    NSArray *messages = self.conversation[@"messages"];
-    for (NSInteger i = (NSInteger)messages.count - 1; i >= 0; i--) {
-        NSDictionary *message = messages[(NSUInteger)i];
-        if ([message[@"role"] isEqualToString:@"user"] && [message[@"text"] isKindOfClass:[NSString class]]) {
-            return message[@"text"];
-        }
-    }
-    return @"";
-}
-
-// An image request goes to an image-capable Gemini model for that one reply. The model the person chose is kept.
-- (NSString *)modelIdForThisRequest {
-    NSString *selected = [self.model copy];
-    if ([Provider forModelId:selected] != AIProviderGemini) return selected;
-    if ([selected rangeOfString:@"image"].location != NSNotFound) return selected;
-
-    NSString *text = [[self lastUserText] lowercaseString];
-    NSArray *triggers = @[@"vẽ", @"tạo ảnh", @"tạo hình", @"làm ảnh", @"generate an image", @"generate image", @"create an image", @"draw me"];
-    BOOL wantsImage = NO;
-    for (NSString *trigger in triggers) {
-        if ([text containsString:trigger]) { wantsImage = YES; break; }
-    }
-    if (!wantsImage) return selected;
-
-    for (NSDictionary *model in [ModelStore visibleModelsForProvider:AIProviderGemini]) {
-        NSString *modelId = model[@"id"];
-        if (![modelId isKindOfClass:[NSString class]]) continue;
-        if ([modelId rangeOfString:@"image"].location != NSNotFound && [ModelStore isModelAvailableNow:modelId]) {
-            [DiagnosticLog log:@"image request: this reply uses %@", modelId];
-            return modelId;
-        }
-    }
-    return selected;
-}
-
-// True when the request needs calculation, charts or data processing: then Gemini may run Python.
-- (BOOL)wantsCodeExecution {
-    NSString *text = [[self lastUserText] lowercaseString];
-    NSArray *signals = @[@"chạy", @"tính", @"biểu đồ", @"python", @"vẽ đồ thị", @"plot", @"chart", @"calculate",
-                         @"compute", @"simulate", @"mô phỏng", @"csv", @"phân tích dữ liệu", @"thống kê"];
-    for (NSString *signal in signals) {
-        if ([text containsString:signal]) return YES;
-    }
-    return NO;
-}
-
-// Finds ```file:NAME blocks in a reply, saves each as a file attachment and returns the reply without those blocks.
-- (NSString *)extractFileBlocksFromReply:(NSString *)reply intoAttachments:(NSMutableArray *)out {
-    if (reply.length == 0) return reply;
-    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-    NSMutableArray *kept = [NSMutableArray array];
-    NSString *currentName = nil;
-    NSMutableArray *body = nil;
-    for (NSString *line in [reply componentsSeparatedByString:@"\n"]) {
-        NSString *trimmed = [line stringByTrimmingCharactersInSet:ws];
-        if (!currentName && [trimmed hasPrefix:@"```file:"]) {
-            currentName = [[trimmed substringFromIndex:7] stringByTrimmingCharactersInSet:ws];
-            body = [NSMutableArray array];
-            continue;
-        }
-        if (currentName) {
-            if ([trimmed isEqualToString:@"```"]) {
-                NSDictionary *attachment = [self saveGeneratedFileNamed:currentName
-                                                                content:[body componentsJoinedByString:@"\n"]];
-                if (attachment) {
-                    [out addObject:attachment];
-                } else {
-                    [kept addObject:[NSString stringWithFormat:@"(Không tạo được tệp %@)", currentName]];
-                }
-                currentName = nil;
-                body = nil;
-            } else {
-                [body addObject:line];
-            }
-            continue;
-        }
-        [kept addObject:line];
-    }
-    if (currentName) [kept addObjectsFromArray:body];   // a block that never closed: keep its text
-    return [kept componentsJoinedByString:@"\n"];
-}
-
-- (NSDictionary *)saveGeneratedFileNamed:(NSString *)rawName content:(NSString *)content {
-    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-    NSString *name = [rawName stringByTrimmingCharactersInSet:ws];
-    name = [[name componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/\\:"]]
-            componentsJoinedByString:@"-"];
-    if (name.length == 0) name = @"tep.txt";
-    if (name.length > 80) name = [name substringFromIndex:name.length - 80];
-    NSString *ext = [[name pathExtension] lowercaseString];
-    NSData *data = nil;
-    NSString *finalName = name;
-
-    if ([ext isEqualToString:@"docx"]) {
-        NSError *error = nil;
-        NSURL *url = [OfficeExport writeWordFile:content error:&error];
-        data = url ? [NSData dataWithContentsOfURL:url] : nil;
-        if (url) [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
-        if (!data) [DiagnosticLog log:@"generated docx failed: %@", error.localizedDescription ?: @"unknown"];
-    } else {
-        NSSet *textExtensions = [NSSet setWithObjects:@"txt", @"md", @"csv", @"json", @"html", @"htm", @"xml", @"py",
-                                 @"js", @"swift", @"m", @"h", @"c", @"cpp", @"java", @"sql", @"sh", @"yaml", @"yml",
-                                 @"css", @"tex", @"log", nil];
-        if (![textExtensions containsObject:ext]) {
-            // .xlsx, .pptx, .pdf and other binary formats are not produced yet: keep the text as a .txt file.
-            finalName = [[name stringByDeletingPathExtension] stringByAppendingString:@".txt"];
-            [DiagnosticLog log:@"generated file %@ saved as text: format not supported yet", name];
-        }
-        data = [content dataUsingEncoding:NSUTF8StringEncoding];
-    }
-    if (data.length == 0) return nil;
-
-    NSString *errorKey = nil;
-    return [AttachmentStore importFileData:data name:finalName conversation:self.conversation[@"id"] errorKey:&errorKey];
-}
-
-- (void)shareFileForAttachmentId:(NSString *)attachmentId {
-    if (![attachmentId isKindOfClass:[NSString class]] || attachmentId.length == 0) return;
-    NSString *cid = self.conversation[@"id"];
-    for (NSDictionary *message in self.conversation[@"messages"]) {
-        NSArray *atts = message[@"attachments"];
-        if (![atts isKindOfClass:[NSArray class]]) continue;
-        for (NSDictionary *att in atts) {
-            if (![att[@"id"] isEqualToString:attachmentId] || ![att[@"kind"] isEqualToString:@"file"]) continue;
-            NSString *path = [AttachmentStore pathForFile:att[@"file"] conversation:cid];
-            if (!path) return;
-            // Share a copy with the real name, so the person sees "bao-cao.docx" and not a UUID.
-            NSString *shareDir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"ClaudeMiniShare"];
-            [[NSFileManager defaultManager] createDirectoryAtPath:shareDir withIntermediateDirectories:YES attributes:nil error:nil];
-            NSString *shareName = [att[@"name"] isKindOfClass:[NSString class]] ? att[@"name"] : @"tep";
-            NSString *sharePath = [shareDir stringByAppendingPathComponent:shareName];
-            [[NSFileManager defaultManager] removeItemAtPath:sharePath error:nil];
-            [[NSFileManager defaultManager] copyItemAtPath:path toPath:sharePath error:nil];
-            [self.view endEditing:YES];
-            UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:sharePath]] applicationActivities:nil];
-            activity.popoverPresentationController.sourceView = self.view;
-            activity.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
-            [self presentViewController:activity animated:YES completion:nil];
-            return;
-        }
-    }
-}
-
-// Search only when the question is about something that can change or must be checked.
-- (BOOL)wantsWebSearch {
-    NSString *text = [[self lastUserText] lowercaseString];
-    NSArray *signals = @[@"tìm", @"tra cứu", @"search", @"google", @"hôm nay", @"hôm qua", @"mới nhất", @"gần đây",
-                         @"hiện tại", @"bây giờ", @"tin tức", @"news", @"latest", @"today", @"current", @"price",
-                         @"giá", @"tỉ giá", @"thời tiết", @"kết quả", @"breaking", @"2025", @"2026"];
-    for (NSString *signal in signals) {
-        if ([text containsString:signal]) return YES;
-    }
-    return NO;
 }
 
 - (NSString *)effectiveSystemPrompt {
@@ -3080,23 +2895,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         NSString *codingDirective = @"\n\n[CODING RESPONSE REQUIREMENTS] For a coding, debugging, or source-editing request, deliver implementation rather than an outline alone. Include the complete requested function or changed file sections with all required declarations/imports; do not replace code with ellipses, placeholders, TODOs, or pseudo-code. Do not describe a large architecture while returning only a tiny code fragment. When the user asks for a complete file or a large implementation, provide the full requested code, not a shortened sample. Do not arbitrarily stop after the design or first few functions; continue until every requested component is implemented. Preserve unrelated behavior and make only requested changes. Check method names, property declarations, types, API payload fields, and error paths for consistency. Explain the exact files and behavior changed, then clearly state anything not build-tested. Prefer complete, compilable code over an inflated architecture proposal. The app automatically requests continuation when the provider reports its output-token limit; continue from the exact next line without repeating earlier code. If continuation cannot proceed because the model context or provider limit is reached, state the precise remaining section instead of claiming the work is complete.";
         selectedPrompt = [selectedPrompt stringByAppendingString:codingDirective];
     }
-    AIReasoningLevel rLevel = [AppSettings reasoningLevel];
-    NSString *levelDirective = nil;
-    if (rLevel == AIReasoningLevelLow) {
-        levelDirective = @"\n\n[FAST MODE] Answer directly and concisely. Skip optional detail.";
-    } else if (rLevel == AIReasoningLevelMedium) {
-        levelDirective = @"\n\n[BALANCED MODE] Think before answering. Give a complete, well-structured answer with the key details.";
-    } else if (rLevel == AIReasoningLevelHigh) {
-        levelDirective = @"\n\n[DEEP REASONING MODE] Think through the problem step by step and check the reasoning for errors before concluding. Give a thorough, detailed answer that covers edge cases and explains why, not only what.";
-    } else if (rLevel == AIReasoningLevelVeryHigh) {
-        levelDirective = @"\n\n[VERY DEEP REASONING MODE] Analyse the problem from several angles, compare the options, and verify each conclusion before stating it. Give a long, precise, detailed answer with concrete examples and numbers where they apply. If you find a mistake while reasoning, correct it explicitly.";
-    } else {
-        levelDirective = @"\n\n[MAXIMUM REASONING MODE] Take as long as needed. Explore alternative solutions, test each against the requirements, and self-review the final answer for errors, fixing them before presenting it. Give the most complete, precise and detailed answer possible, with full steps, edge cases, verification and a clear summary at the end.";
-    }
-    selectedPrompt = [selectedPrompt stringByAppendingString:levelDirective];
-    selectedPrompt = [selectedPrompt stringByAppendingString:
-        @"\n\n[FILE OUTPUT] When the person needs a file to download (Word, text, CSV, HTML, source code...), put the complete file content inside one block that starts with three backticks followed by file:FILENAME.EXT and ends with three backticks, for example: ```file:bao-cao.docx on its own line, then the content, then ``` on its own line. Supported: .docx, .txt, .md, .csv, .json, .html, and common source-code extensions. Outside that block, write one short sentence saying what the file contains. Do not use this block for ordinary answers."];
-    if (self.searchAllowedForReply) {
+    if ([AppSettings webSearchEnabled]) {
         selectedPrompt = [selectedPrompt stringByAppendingString:@"\n\n[WEB SEARCH ENABLED] A real provider-managed web search tool is attached to this request. When the user explicitly asks to search, or the answer depends on current, recent, external, or verifiable information, you MUST invoke the search tool before answering and base factual claims on the returned results. Do not claim to have searched unless the API actually returned results. If the selected model/provider rejects or does not support the tool, state that limitation plainly instead of pretending the search happened." ];
     }
     return selectedPrompt;
@@ -3119,13 +2918,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (void)launchRequestStreaming:(BOOL)useStreaming {
     self.attemptIsStreaming = useStreaming;
     AIProvider provider = [Provider forModelId:self.model];
-    // Google sign-in: a current access token (refreshed when needed). Safe on the main thread.
-    NSString *key = [KeyStore freshKeyForProvider:provider] ?: @"";
-    NSString *modelId = [self modelIdForThisRequest];
-    // Decided here: the setting, the question and any earlier refusal by the provider.
-    BOOL searchAllowed = [AppSettings webSearchEnabled] && !self.toolsDisabledForReply && [self wantsWebSearch];
-    BOOL codeAllowed = !self.toolsDisabledForReply && provider == AIProviderGemini && [self wantsCodeExecution];
-    self.searchAllowedForReply = searchAllowed;
+    NSString *key = [KeyStore loadKeyForProvider:provider] ?: @"";
     NSMutableArray *turns = [[self buildTurns] mutableCopy];
     NSString *system = [self effectiveSystemPrompt];
     if (self.longReplyAccumulator.length > 0) {
@@ -3141,8 +2934,8 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         while (turns.count > 1 && [turns.firstObject[@"role"] isEqualToString:@"assistant"]) [turns removeObjectAtIndex:0];
     }
     id<ChatStreaming> stream = (provider == AIProviderClaude)
-        ? (id<ChatStreaming>)[[ClaudeStream alloc] initWithKey:key model:modelId turns:turns system:system]
-        : (id<ChatStreaming>)[[GeminiStream alloc] initWithKey:key model:modelId turns:turns system:system];
+        ? (id<ChatStreaming>)[[ClaudeStream alloc] initWithKey:key model:self.model turns:turns system:system]
+        : (id<ChatStreaming>)[[GeminiStream alloc] initWithKey:key model:self.model turns:turns system:system];
     BOOL fastEnabled = [AppSettings fastModeEnabled] && !self.didFallbackFromFastMode;
     if (provider == AIProviderClaude) {
         ((ClaudeStream *)stream).useFastSpeed = fastEnabled;
@@ -3150,12 +2943,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         [(id)stream setValue:@(fastEnabled) forKey:@"useFastSpeed"];
     }
     stream.useStreaming = useStreaming;
-    stream.allowWebSearch = searchAllowed;
-    stream.disableTools = self.toolsDisabledForReply;
-    if ([stream isKindOfClass:[GeminiStream class]]) {
-        ((GeminiStream *)stream).allowCodeExecution = codeAllowed;
-    }
-    self.requestUsedTools = !self.toolsDisabledForReply && (searchAllowed || codeAllowed);
     self.stream = stream;
     if (!self.streamGeneratedAttachments) self.streamGeneratedAttachments = [NSMutableArray array];
     self.requestStartTime = CFAbsoluteTimeGetCurrent();
@@ -3166,7 +2953,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     stream.onDelta = ^(NSString *text) {
         ChatViewController *me = weakSelf;
         if (!me || me.stream != weakStream || text.length == 0) return;
-        [me stopThinkingTimer];
         [me.streamBuffer appendString:text];
         if (me.pendingJSDelta) {
             [me.pendingJSDelta appendString:text];
@@ -3282,22 +3068,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         return;
     }
 
-    // Search or code tools can be refused for a key, a model or a region (403 / 400). Retry this reply once without them.
-    BOOL toolsRejected = self.requestUsedTools && !self.toolsDisabledForReply && partial.length == 0 &&
-        self.streamGeneratedAttachments.count == 0 &&
-        (error == GeminiStreamErrorPermissionDenied || error == GeminiStreamErrorUnknown ||
-         status == 400 || status == 403 || status == 404);
-    if (toolsRejected) {
-        self.toolsDisabledForReply = YES;
-        self.requestUsedTools = NO;
-        self.stream = nil;
-        [DiagnosticLog log:@"tool request refused (HTTP %ld): retrying the reply without search and code tools", (long)status];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
-        });
-        return;
-    }
-
     BOOL retryableStatus = (status == 429 || status == 500 || status == 502 || status == 503 || status == 504 || status == 529);
     BOOL transientServer = (error == GeminiStreamErrorServer || error == GeminiStreamErrorRateLimited) && retryableStatus;
     NSInteger retryLimit = status == 429 ? 1 : 3;
@@ -3364,9 +3134,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         return;
     }
 
-    // A timed-out stream would only wait another full timeout in the single-request fallback, so it is not retried here.
-    BOOL timedOutStream = [detail containsString:@"-1001"];
-    if (error == GeminiStreamErrorNetwork && !timedOutStream && partial.length == 0 && self.streamGeneratedAttachments.count == 0 && self.attemptIsStreaming) {
+    if (error == GeminiStreamErrorNetwork && partial.length == 0 && self.streamGeneratedAttachments.count == 0 && self.attemptIsStreaming) {
         self.stream = nil;
         if (largeClaudeReply && self.streamRetryCount < 1) {
             self.streamRetryCount++;
@@ -3391,10 +3159,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     NSString *completeReply = self.longReplyAccumulator.length > 0
         ? [self.longReplyAccumulator stringByAppendingString:(partial ?: @"")]
         : partial;
-    if (!self.streamGeneratedAttachments) self.streamGeneratedAttachments = [NSMutableArray array];
-    NSMutableArray *fileAttachments = [NSMutableArray array];
-    completeReply = [self extractFileBlocksFromReply:completeReply intoAttachments:fileAttachments];
-    [self.streamGeneratedAttachments addObjectsFromArray:fileAttachments];
     NSArray *generatedAttachments = [self.streamGeneratedAttachments copy] ?: @[];
     if (completeReply.length > 0 || generatedAttachments.count > 0) {
         [self appendAssistantMessage:completeReply attachments:generatedAttachments];
@@ -3510,10 +3274,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         case GeminiStreamErrorPermissionDenied: base = L(@"err_permission"); showDetail = YES; break;
         case GeminiStreamErrorModelNotFound:    base = L(@"err_model_not_found"); break;
         case GeminiStreamErrorRateLimited:      base = L(@"err_rate"); showDetail = YES; break;
-        case GeminiStreamErrorNetwork:
-            base = [detail containsString:@"-1001"] ? L(@"err_timeout") : L(@"err_network");
-            showDetail = YES;
-            break;
+        case GeminiStreamErrorNetwork:          base = L(@"err_network"); showDetail = YES; break;
         case GeminiStreamErrorBlocked:          base = L(@"err_blocked"); break;
         case GeminiStreamErrorEmptyReply:       base = L(@"err_empty_reply"); break;
         case GeminiStreamErrorTooLarge:         base = L(@"err_too_large"); break;

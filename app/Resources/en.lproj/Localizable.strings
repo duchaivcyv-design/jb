@@ -351,35 +351,3 @@
 "font_rounded" = "SF Rounded";
 "font_weight_title" = "Font weight";
 "font_weight_normal" = "Normal";
-
-// Google sign-in and timeout message (0.8.0)
-"google_sign_in" = "Sign in with Google";
-"google_or" = "or";
-"google_signed_in_as" = "Using Google: %@";
-"google_signed_in_plain" = "Using a Google account";
-"google_not_configured" = "This build has no Google sign-in set up. Please use an API key.";
-"google_failed" = "Google sign-in failed: %@";
-"google_rejected" = "Google sign-in worked, but Gemini has not accepted this access (HTTP %ld). Signed out of Google. Use an API key, or try again later.";
-"google_quota_note" = "Requests go through the Google Cloud project of this build, so the quota is counted against that project.";
-"google_sign_out" = "Sign out of Google";
-"google_sign_out_msg" = "You will need to sign in with Google again to use Gemini.";
-"err_timeout" = "The model did not answer in time (it is usually thinking for too long). Try a lower reasoning level in Settings, then send again.";
-
-// In-app Google setup (0.8.0)
-"google_edit_hint" = "Press and hold the button to edit the Client ID and Project ID.";
-"google_config_title" = "Google setup";
-"google_config_msg" = "Paste your OAuth Client ID (…apps.googleusercontent.com) and Project ID from your Google Cloud Console.";
-"google_config_client_placeholder" = "Client ID";
-"google_config_project_placeholder" = "Project ID (optional)";
-"google_config_save" = "Save and sign in";
-"google_bad_client_id" = "The Client ID must look like 123-abc.apps.googleusercontent.com";
-
-// Thinking time (0.8.0)
-"thinking_seconds" = "Thinking… %ld s";
-"thinking_minutes" = "Thinking… %ld min %ld s";
-
-// Key paste check (0.8.0)
-"key_not_found" = "No API key (starting with AIza) was found in the pasted text. Copy the key again from aistudio.google.com.";
-
-// AQ. key explanation (0.8.0)
-"key_aq_prefix" = "Keys that start with AQ. are the new AI Studio type, and the Gemini API currently rejects them (error 401). Use a key that starts with AIza, or sign in with Google.";

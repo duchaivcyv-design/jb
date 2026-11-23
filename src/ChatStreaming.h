@@ -31,8 +31,6 @@ static NSString *const kStreamEndedEarlyMarker  = @"__STREAM_ENDED_EARLY__";    
 
 // YES (default): live stream (Server-Sent Events). NO: one normal request/response, delivered as a single delta.
 @property (assign, nonatomic) BOOL useStreaming;
-@property (assign, nonatomic) BOOL allowWebSearch;   // per request: the person's setting AND the question needs fresh facts
-@property (assign, nonatomic) BOOL disableTools;     // retry without search/code tools after the provider refused them
 @property (assign, nonatomic) NSTimeInterval retryAfterSeconds; // HTTP Retry-After, when supplied by the provider
 
 @property (copy, nonatomic) void (^onDelta)(NSString *text);

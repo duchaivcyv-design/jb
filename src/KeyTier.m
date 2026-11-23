@@ -127,7 +127,7 @@ static BOOL gDetecting = NO;
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                        timeoutInterval:25];
     request.HTTPMethod = @"POST";
-    [KeyStore applyGeminiCredential:key toRequest:request];
+    [request setValue:key forHTTPHeaderField:@"x-goog-api-key"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     NSDictionary *body = @{ @"contents": @[ @{ @"parts": @[ @{ @"text": @"." } ] } ],
                             @"generationConfig": @{ @"maxOutputTokens": @1 } };

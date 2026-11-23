@@ -140,7 +140,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
         if (budget >= 1024) payload[@"thinking"] = @{ @"type": @"enabled", @"budget_tokens": @(budget) };
     }
 
-    if (self.allowWebSearch && !self.disableTools) {
+    if ([AppSettings webSearchEnabled]) {
         payload[@"tools"] = @[@{ @"type": @"web_search_20250305", @"name": @"web_search", @"max_uses": @3 }];
     }
     NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
@@ -393,13 +393,8 @@ didReceiveResponse:(NSURLResponse *)response
 
     NSInteger maxRetries = self.useFastSpeed ? 6 : 10;
     double maxBackoff = self.useFastSpeed ? 6.0 : 10.0;
-    // A timeout means no bytes arrived for the whole idle window (common while the model is still thinking).
-    // Retrying it silently only repeats the same long wait, so it fails at once with a clear message instead.
-    BOOL timedOut = (error != nil && error.code == NSURLErrorTimedOut);
-    BOOL networkDrop = (error != nil && self.status == 0 && error.code != NSURLErrorCancelled && !timedOut);
-    NSInteger retryLimit = isRateLimitOrOverload ? maxRetries : MIN(maxRetries, 3);
-    if (!stallGaveUp && !self.gotText && (isRateLimitOrOverload || networkDrop)) {
-        if (self.sameKeyRetryCount < retryLimit) {
+    if (!stallGaveUp && !self.gotText && (isRateLimitOrOverload || (error != nil && self.status == 0 && error.code != NSURLErrorCancelled))) {
+        if (self.sameKeyRetryCount < maxRetries) {
             self.sameKeyRetryCount++;
             NSTimeInterval backoffDelay = MIN(pow(1.6, self.sameKeyRetryCount), maxBackoff);
             NSTimeInterval jitter = (double)(arc4random_uniform(500)) / 1000.0;

@@ -34,7 +34,7 @@ xcrun --sdk iphoneos clang \
   -isysroot "$SDK" \
   -fobjc-arc -fmodules -O2 -Wall -Wno-deprecated-declarations \
   src/*.m src/*.c \
-  -framework UIKit -framework Foundation -framework Security -framework WebKit -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreText -framework AuthenticationServices -lz \
+  -framework UIKit -framework Foundation -framework Security -framework WebKit -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreText -lz \
   -o "$APPDIR/$APP"
 
 echo "==> Compiling the icon helper (setuid root in the .deb only)"
@@ -55,28 +55,6 @@ cp app/Info.plist "$APPDIR/Info.plist"
 # Override only on purpose: CLAUDEMINI_UPDATE_REPO=owner/repo ./build.sh
 if [ -n "${CLAUDEMINI_UPDATE_REPO:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :ClaudeMiniUpdateRepo $CLAUDEMINI_UPDATE_REPO" "$APPDIR/Info.plist"
-fi
-# Google sign-in (optional). GOOGLE_OAUTH_CLIENT_ID is an iOS OAuth client ID from Google Cloud, e.g.
-# 123456-abc.apps.googleusercontent.com. Without it the sign-in button stays hidden and only API keys are used.
-if [ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" ]; then
-  GOOGLE_ID="$(printf '%s' "$GOOGLE_OAUTH_CLIENT_ID" | tr -d '[:space:]')"
-  GOOGLE_PREFIX="${GOOGLE_ID%.apps.googleusercontent.com}"
-  /usr/libexec/PlistBuddy -c "Delete :GoogleOAuthClientID" "$APPDIR/Info.plist" >/dev/null 2>&1 || true
-  /usr/libexec/PlistBuddy -c "Add :GoogleOAuthClientID string $GOOGLE_ID" "$APPDIR/Info.plist"
-  if [ -n "${GOOGLE_CLOUD_PROJECT_ID:-}" ]; then
-    /usr/libexec/PlistBuddy -c "Delete :GoogleCloudProjectID" "$APPDIR/Info.plist" >/dev/null 2>&1 || true
-    /usr/libexec/PlistBuddy -c "Add :GoogleCloudProjectID string $GOOGLE_CLOUD_PROJECT_ID" "$APPDIR/Info.plist"
-  fi
-  /usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$APPDIR/Info.plist" >/dev/null 2>&1 || true
-  /usr/libexec/PlistBuddy \
-    -c "Add :CFBundleURLTypes array" \
-    -c "Add :CFBundleURLTypes:0 dict" \
-    -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" \
-    -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string com.googleusercontent.apps.$GOOGLE_PREFIX" \
-    "$APPDIR/Info.plist"
-  echo "Google sign-in enabled for client $GOOGLE_ID"
-else
-  echo "Google sign-in disabled: GOOGLE_OAUTH_CLIENT_ID is not set"
 fi
 cp -R app/Resources/. "$APPDIR/"
 printf 'APPL????' > "$APPDIR/PkgInfo"

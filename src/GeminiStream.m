@@ -2,7 +2,6 @@
 #import "AppSettings.h"
 #import "ModelStore.h"
 #import "Provider.h"
-#import "KeyStore.h"
 
 @interface GeminiStream () <NSURLSessionDataDelegate>
 @property (copy, nonatomic) NSString *key;
@@ -140,18 +139,13 @@
     }
 
     if ([lowerModel containsString:@"image"] || [lowerModel containsString:@"nano-banana"]) {
-        [generationConfig removeObjectForKey:@"thinkingConfig"];   // image models reject thinking settings
         generationConfig[@"responseModalities"] = @[@"TEXT", @"IMAGE"];
     }
     BOOL imageGenerationModel = [lowerModel containsString:@"image"] || [lowerModel containsString:@"nano-banana"];
     NSMutableDictionary *payload = [@{ @"contents": [GeminiStream contentsFromTurns:self.turns],
                                        @"generationConfig": generationConfig } mutableCopy];
     if (self.system.length > 0) payload[@"systemInstruction"] = @{ @"parts": @[ @{ @"text": self.system } ] };
-    NSMutableArray *tools = [NSMutableArray array];
-    BOOL toolsOK = !self.disableTools && !imageGenerationModel;
-    if (self.allowWebSearch && toolsOK) [tools addObject:@{ @"google_search": @{} }];
-    if (self.allowCodeExecution && toolsOK) [tools addObject:@{ @"code_execution": @{} }];
-    if (tools.count > 0) payload[@"tools"] = tools;
+    if ([AppSettings webSearchEnabled] && !imageGenerationModel) payload[@"tools"] = @[@{ @"google_search": @{} }];
     NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
 
     NSTimeInterval timeout = [GeminiStream idleTimeoutFast:self.useFastSpeed streaming:self.useStreaming];
@@ -165,7 +159,7 @@
     if (self.useStreaming) {
         [request setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
     }
-    [KeyStore applyGeminiCredential:self.key toRequest:request];
+    [request setValue:self.key forHTTPHeaderField:@"x-goog-api-key"];
 
     self.savedRequest = request;
     [self executeForcedRequest:request];
@@ -395,13 +389,8 @@ didReceiveResponse:(NSURLResponse *)response
     // Chỉ retry tự động khi chưa nhận được chữ (`!self.gotText`) để tránh lặp lại đoạn đã stream
     NSInteger maxRetries = self.useFastSpeed ? 8 : 12;
     double maxBackoff = self.useFastSpeed ? 6.0 : 12.0;
-    // A timeout means no bytes arrived for the whole idle window (common while the model is still thinking).
-    // Retrying it silently only repeats the same long wait, so it fails at once with a clear message instead.
-    BOOL timedOut = (error != nil && error.code == NSURLErrorTimedOut);
-    BOOL networkDrop = (error != nil && self.status == 0 && error.code != NSURLErrorCancelled && !timedOut);
-    NSInteger retryLimit = isRateLimitOrOverload ? maxRetries : MIN(maxRetries, 3);
-    if (!stallGaveUp && !self.gotText && (isRateLimitOrOverload || networkDrop)) {
-        if (self.sameKeyRetryCount < retryLimit) {
+    if (!stallGaveUp && !self.gotText && (isRateLimitOrOverload || (error != nil && self.status == 0 && error.code != NSURLErrorCancelled))) {
+        if (self.sameKeyRetryCount < maxRetries) {
             self.sameKeyRetryCount++;
             NSTimeInterval backoffDelay = MIN(pow(1.6, self.sameKeyRetryCount), maxBackoff);
             NSTimeInterval jitter = (double)(arc4random_uniform(500)) / 1000.0;

@@ -302,7 +302,6 @@
           var chip = el('div', 'file');
           chip.appendChild(el('span', 'ext', extLabel(a)));
           chip.appendChild(el('span', 'fname', a.name || ''));
-          if (a.kind === 'file') { chip.style.cursor = 'pointer'; chip.addEventListener('click', (function (id) { return function () { post({ type: 'file', id: id }); }; })(a.id), false); }
           box.appendChild(chip);
         }
       }
@@ -358,69 +357,7 @@
     }
   }
 
-  // Smooth typing: incoming text waits in c.pending and is released in small steps. The step grows with the backlog,
-// so a long burst still catches up quickly while short pieces appear one after another.
-var PACE_INTERVAL = 22;
-var STALL_AFTER_MS = 4000;
-
-function scheduleRender(c) {
-  if (c.status && c.status.parentNode) { c.status.parentNode.removeChild(c.status); c.status = null; }
-  if (!c.rendered) {
-    c.rendered = true;
-    renderInto(c.content, c.text);
-    if (stick) { toBottom(false); }
-    updateJump();
-  } else if (!c.timer) {
-    c.timer = setTimeout(function () {
-      c.timer = null;
-      if (current === c) {
-        renderInto(c.content, c.text);
-        if (stick) { toBottom(false); }
-        updateJump();
-      }
-    }, RENDER_INTERVAL);
-  }
-}
-
-function paceStep(c) {
-  c.pacer = setTimeout(function step() {
-    c.pacer = null;
-    if (current !== c) { return; }
-    if (!c.pending) { return; }
-    var backlog = c.pending.length;
-    var n = Math.min(400, Math.max(2, Math.ceil(backlog / 8)));
-    c.text += c.pending.slice(0, n);
-    c.pending = c.pending.slice(n);
-    scheduleRender(c);
-    if (c.pending.length) { paceStep(c); }
-  }, PACE_INTERVAL);
-}
-
-function startStallWatch(c) {
-  c.lastDelta = Date.now();
-  c.stallTimer = setInterval(function () {
-    if (current !== c) { return; }
-    var idle = Math.floor((Date.now() - c.lastDelta) / 1000);
-    if (idle * 1000 < STALL_AFTER_MS) {
-      if (c.waitEl && c.waitEl.parentNode) { c.waitEl.parentNode.removeChild(c.waitEl); }
-      c.waitEl = null;
-      return;
-    }
-    if (!c.waitEl) {
-      c.waitEl = el('div', 'thinking-label', '');
-      c.row.appendChild(c.waitEl);
-    }
-    c.waitEl.textContent = ((S && S.waiting) || 'Đang chờ phản hồi…') + ' ' + idle + 's';
-  }, 1000);
-}
-
-function stopStallWatch(c) {
-  if (c.stallTimer) { clearInterval(c.stallTimer); c.stallTimer = null; }
-  if (c.waitEl && c.waitEl.parentNode) { c.waitEl.parentNode.removeChild(c.waitEl); }
-  c.waitEl = null;
-}
-
-window.ChatUI = {
+  window.ChatUI = {
     setStrings: function (obj) {
       for (var k in obj) {
         if (Object.prototype.hasOwnProperty.call(obj, k)) { S[k] = obj[k]; }
@@ -472,10 +409,6 @@ window.ChatUI = {
       toBottom(true);
     },
 
-    setStatus: function (text) {
-      if (current && current.status) current.status.textContent = text;
-    },
-
     begin: function () {
       removeEmpty();
       clearErrors();
@@ -490,44 +423,38 @@ window.ChatUI = {
       row.appendChild(status);
       row.appendChild(body);
       msgsEl.appendChild(row);
-      current = {
-        row: row,
-        body: body,
-        content: content,
-        dot: dot,
-        status: status,
-        text: '',
-        timer: null,
-        rendered: false,
-        pending: '',
-        pacer: null,
-        stallTimer: null,
-        waitEl: null,
-        lastDelta: Date.now()
-      };
-      startStallWatch(current);
+      current = { row: row, body: body, content: content, dot: dot, status: status, text: '', timer: null, rendered: false };
       refreshRegenerate();
       updateJump();
     },
 
     delta: function (s) {
-      if (!current || !s) { return; }
+      if (!current) { return; }
+      current.text += s;
       var c = current;
-      c.lastDelta = Date.now();
       if (c.status && c.status.parentNode) { c.status.parentNode.removeChild(c.status); c.status = null; }
-      if (c.waitEl && c.waitEl.parentNode) { c.waitEl.parentNode.removeChild(c.waitEl); c.waitEl = null; }
-      c.pending += s;
-      if (!c.pacer) { paceStep(c); }
+      if (!c.rendered) {
+        c.rendered = true;
+        renderInto(c.content, c.text);
+        if (stick) { toBottom(false); }
+        updateJump();
+      } else if (!c.timer) {
+        c.timer = setTimeout(function () {
+          c.timer = null;
+          if (current === c) {
+            renderInto(c.content, c.text);
+            if (stick) { toBottom(false); }
+            updateJump();
+          }
+        }, RENDER_INTERVAL);
+      }
     },
 
     end: function (finalText) {
       if (!current) { return; }
       var c = current;
       current = null;
-      if (c.pacer) { clearTimeout(c.pacer); c.pacer = null; }
-      if (c.pending) { c.text += c.pending; c.pending = ''; }
       if (c.timer) { clearTimeout(c.timer); c.timer = null; }
-      stopStallWatch(c);
       if (c.dot.parentNode) { c.dot.parentNode.removeChild(c.dot); }
       if (c.status && c.status.parentNode) { c.status.parentNode.removeChild(c.status); }
       c.row._streaming = false;

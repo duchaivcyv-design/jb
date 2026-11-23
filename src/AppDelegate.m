@@ -2,7 +2,6 @@
 #import "RootViewController.h"
 #import "ChatViewController.h"
 #import "KeyStore.h"
-#import "GoogleAuth.h"
 #import "Strings.h"
 #import "Theme.h"
 #import "DiagnosticLog.h"
@@ -87,7 +86,6 @@
 
 // Auto dark mode follows the device clock: check when the app comes back and once a minute while it is open.
 - (void)applicationDidBecomeActive:(UIApplication *)application {
-    [GoogleAuth refreshIfNeeded];   // keeps the Google access token fresh after the app sat in the background
     [self autoThemeTick];
 }
 
