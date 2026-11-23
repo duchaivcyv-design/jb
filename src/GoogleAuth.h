@@ -25,7 +25,8 @@ typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
 // State (cheap: reads NSUserDefaults only).
 + (BOOL)isSignedIn;
 + (NSString *)accountEmail;          // may be empty
-+ (NSString *)savedClientID;
++ (NSString *)builtInClientID;      // client ID compiled into the app (empty = ask the person to paste one)
++ (NSString *)savedClientID;       // the pasted/last used one, else the built-in one
 + (NSString *)savedProjectID;
 + (BOOL)prefersGoogle;               // when a pasted API key AND a Google session both exist, which one is used
 + (void)setPrefersGoogle:(BOOL)prefers;

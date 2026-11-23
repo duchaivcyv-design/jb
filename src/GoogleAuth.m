@@ -26,6 +26,9 @@ static NSString *const kDefPrefer      = @"geminiPrefersGoogle";
 static NSString *const kRefreshSecret  = @"google-refresh-token";
 static NSString *const kClientSuffix   = @".apps.googleusercontent.com";
 
+// OAuth client (type iOS) created by the app owner in Google Cloud. A client ID is public, not a secret.
+static NSString *const kBuiltInClientID = @"249083247394-l5nb5ua39bopp27fdj8c0ldhlrfm8g0k.apps.googleusercontent.com";
+
 #pragma mark - Small helpers
 
 static NSString *Trimmed(NSString *s) {
@@ -125,7 +128,11 @@ static NSMutableArray *gWaiters;   // blocks waiting for the refresh that is in 
 
 + (BOOL)isSignedIn { return [[NSUserDefaults standardUserDefaults] boolForKey:kDefSignedIn]; }
 + (NSString *)accountEmail { return [[NSUserDefaults standardUserDefaults] stringForKey:kDefEmail] ?: @""; }
-+ (NSString *)savedClientID { return [[NSUserDefaults standardUserDefaults] stringForKey:kDefClientID] ?: @""; }
++ (NSString *)builtInClientID { return kBuiltInClientID; }
++ (NSString *)savedClientID {
+    NSString *saved = [[NSUserDefaults standardUserDefaults] stringForKey:kDefClientID];
+    return saved.length > 0 ? saved : kBuiltInClientID;
+}
 + (NSString *)savedProjectID { return [[NSUserDefaults standardUserDefaults] stringForKey:kDefProjectID] ?: @""; }
 + (BOOL)prefersGoogle { return [[NSUserDefaults standardUserDefaults] boolForKey:kDefPrefer]; }
 

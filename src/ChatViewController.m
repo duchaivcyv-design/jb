@@ -469,10 +469,6 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
     self.view.clipsToBounds = YES;
     self.greetingIndex = arc4random_uniform((uint32_t)kGreetingCount);
     self.jsSerializationQueue = dispatch_queue_create("com.app.chat.jsserialization", DISPATCH_QUEUE_SERIAL);
-    // --- BẮT ĐẦU PHẦN THÊM VÀO ĐỂ FIX TREO STREAM ---
-    self.streamBuffer = [NSMutableData data];
-    self.parsingQueue = dispatch_queue_create("com.app.gemini.parsing", DISPATCH_QUEUE_SERIAL);
-    // --- KẾT THÚC PHẦN THÊM VÀO ---
 
     self.chatStageView = [[UIView alloc] initWithFrame:self.view.bounds];
     self.chatStageView.backgroundColor = [Theme background];

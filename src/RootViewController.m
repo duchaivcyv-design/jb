@@ -456,6 +456,10 @@ typedef NS_ENUM(NSInteger, StatusKind) {
 - (void)googleTapped {
     if (self.busy) return;
     [self.view endEditing:YES];
+    if ([GoogleAuth builtInClientID].length > 0) {   // client ID is built in: one tap, no questions
+        [self startGoogleSignInWithClientID:[GoogleAuth builtInClientID] projectID:[GoogleAuth savedProjectID]];
+        return;
+    }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:L(@"google_setup_title")
                                                                    message:L(@"google_setup_msg")
                                                             preferredStyle:UIAlertControllerStyleAlert];
