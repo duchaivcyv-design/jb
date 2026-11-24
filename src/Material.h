@@ -69,6 +69,7 @@ extern const NSTimeInterval MaterialDurationLong2;     // 0.50
 + (void)decorateCell:(UITableViewCell *)cell atIndexPath:(NSIndexPath *)indexPath inTable:(UITableView *)table;
 + (CGFloat)classic:(CGFloat)classic material:(CGFloat)material;   // a size that is different in the two designs
 + (void)installTableEffects:(UITableView *)table;                // ripple under the finger on every row (Material only)
++ (void)installStretchOnScrollView:(UIScrollView *)scrollView;   // Material 3 stretch at the top and bottom instead of the rubber band (Material design only)
 + (void)markTableForEntrance:(UITableView *)table;               // the rows that show up in the next moment spring in one after another
 + (void)springAnimations:(void (^)(void))animations;             // the spatial spring of Material 3 Expressive (default speed)
 // Springs of the Expressive scheme. Spatial = anything that moves, scales or changes shape (damping 0.6/0.8/0.8, stiffness 800/380/200);

@@ -349,6 +349,7 @@ didReceiveResponse:(NSURLResponse *)response
             }
             void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
             self.onDelta = nil;
+            self.onThought = nil;
             self.onUsage = nil;
             self.onFinish = nil;
             if (finish) finish(result, self.status, detail);
@@ -360,6 +361,7 @@ didReceiveResponse:(NSURLResponse *)response
         }
         void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
         self.onDelta = nil;
+        self.onThought = nil;
         self.onUsage = nil;
         self.onFinish = nil;
         // A live stream that closed without the provider's final event was cut short (the connection was closed quietly):
@@ -385,6 +387,7 @@ didReceiveResponse:(NSURLResponse *)response
         self.task = nil;
         void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
         self.onDelta = nil;
+        self.onThought = nil;
         self.onUsage = nil;
         self.onFinish = nil;
         if (finish) finish(GeminiStreamErrorCancelled, self.status, nil);
@@ -462,6 +465,7 @@ didReceiveResponse:(NSURLResponse *)response
     else if (reportedStatus == 200 && [self.inStreamErrorType isEqualToString:@"api_error"]) reportedStatus = 500;
     NSInteger status = reportedStatus;
     self.onDelta = nil;
+    self.onThought = nil;
     self.onUsage = nil;
     self.onFinish = nil;
     if (finish) finish(result, status, detail);
@@ -515,6 +519,10 @@ didReceiveResponse:(NSURLResponse *)response
             self.gotText = YES;
             if (self.onDelta) self.onDelta(text);
         }
+        NSString *thought = [delta[@"thinking"] isKindOfClass:[NSString class]] ? delta[@"thinking"] : nil;
+        if ([delta[@"type"] isEqualToString:@"thinking_delta"] && thought.length > 0) {
+            if (self.onThought) self.onThought(thought);   // the reasoning summary (the page shows it under "Thinking")
+        }
     } else if ([type isEqualToString:@"message_stop"]) {
         self.sawMessageStop = YES;
     } else if ([type isEqualToString:@"message_delta"]) {
@@ -546,6 +554,10 @@ didReceiveResponse:(NSURLResponse *)response
     NSMutableString *all = [NSMutableString string];
     NSArray *blocks = [root[@"content"] isKindOfClass:[NSArray class]] ? root[@"content"] : @[];
     for (id block in blocks) {
+        if ([block isKindOfClass:[NSDictionary class]] && [block[@"type"] isEqualToString:@"thinking"] &&
+            [block[@"thinking"] isKindOfClass:[NSString class]] && [block[@"thinking"] length] > 0 && self.onThought) {
+            self.onThought(block[@"thinking"]);
+        }
         if (![block isKindOfClass:[NSDictionary class]] || ![block[@"type"] isEqualToString:@"text"]) continue;
         if ([block[@"text"] isKindOfClass:[NSString class]]) [all appendString:block[@"text"]];
     }

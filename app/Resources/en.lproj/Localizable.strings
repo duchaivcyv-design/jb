@@ -352,7 +352,6 @@
 "font_weight_title" = "Font weight";
 "font_weight_normal" = "Normal";
 
-
 /* Google OAuth sign-in */
 "google_sign_in" = "Sign in with Google";
 "google_sign_in_again" = "Sign in with Google again";
@@ -374,3 +373,28 @@
 "google_status_denied" = "Google refused Gemini access (HTTP %ld). Check that the Generative Language API is enabled, your email is a test user, and the Project ID is right.";
 "err_google_auth" = "The Google sign-in is no longer valid. Go to Settings › Gemini API key and sign in again.";
 "err_google_permission" = "This Google account/project is not allowed to use Gemini. Check that the Generative Language API is enabled and the Project ID.";
+
+/* Google account screen */
+"google_account_title" = "Google Account";
+"google_account_desc" = "Sign in with your Google account so you do not need an API key";
+"google_account_signed_in" = "Signed in";
+"google_account_not_signed_in" = "Not signed in";
+"google_account_active" = "Gemini is using this Google account, no API key needed.";
+"google_check" = "Check connection";
+"google_checking" = "Checking…";
+"google_use_key" = "Use a Gemini API key instead";
+"google_signed_out" = "Signed out of Google.";
+
+/* Delete dialogs (each place that deletes has its own words) */
+"delete_dialog_key_title" = "Delete the %@ API key?";
+"delete_dialog_key_msg" = "The %@ key will be removed from this device. You will need to enter it again to keep using it.";
+"delete_dialog_chat_title" = "Delete this conversation?";
+"delete_dialog_chat_msg" = "“%@” and its attachments will be removed. This can’t be undone.";
+"delete_dialog_chat_untitled" = "Untitled conversation";
+"delete_dialog_all_title" = "Delete all history?";
+"delete_dialog_all_msg" = "Every conversation and attachment on this device will be removed for good. This can’t be undone.";
+"deleted_announce" = "Deleted";
+
+/* Thinking line of the chat */
+"thought_for" = "Thought for %d s";
+"thought_short" = "Thought";

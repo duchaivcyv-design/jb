@@ -112,12 +112,12 @@
         NSArray *levels = self.useFastSpeed
             ? @[@"minimal", @"low", @"low", @"medium", @"high"]
             : @[@"low", @"low", @"medium", @"high", @"high"];
-        generationConfig[@"thinkingConfig"] = @{ @"thinkingLevel": levels[(NSUInteger)reasoning] };
+        generationConfig[@"thinkingConfig"] = @{ @"thinkingLevel": levels[(NSUInteger)reasoning], @"includeThoughts": @YES };
     } else if ([lowerModel containsString:@"gemini-3"]) {
         NSArray *levels = [lowerModel containsString:@"pro"]
             ? (self.useFastSpeed ? @[@"low", @"low", @"low", @"medium", @"high"] : @[@"low", @"low", @"medium", @"high", @"high"])
             : (self.useFastSpeed ? @[@"minimal", @"minimal", @"low", @"medium", @"high"] : @[@"minimal", @"low", @"medium", @"high", @"high"]);
-        generationConfig[@"thinkingConfig"] = @{ @"thinkingLevel": levels[(NSUInteger)reasoning] };
+        generationConfig[@"thinkingConfig"] = @{ @"thinkingLevel": levels[(NSUInteger)reasoning], @"includeThoughts": @YES };
     } else if ([lowerModel containsString:@"gemini-2.5"]) {
         BOOL proModel = [lowerModel containsString:@"pro"];
         NSArray *budgets = proModel
@@ -130,7 +130,7 @@
         NSInteger thinkingBudget = MIN(desiredBudget, availableThinking);
         if (proModel && thinkingBudget > 0 && thinkingBudget < 128) thinkingBudget = 0;
         if (!proModel || thinkingBudget >= 128) {
-            generationConfig[@"thinkingConfig"] = @{ @"thinkingBudget": @(thinkingBudget) };
+            generationConfig[@"thinkingConfig"] = @{ @"thinkingBudget": @(thinkingBudget), @"includeThoughts": @YES };
         }
     }
 
@@ -372,6 +372,7 @@ didReceiveResponse:(NSURLResponse *)response
             }
             void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
             self.onDelta = nil;
+            self.onThought = nil;
             self.onImage = nil;
             self.onUsage = nil;
             self.onFinish = nil;
@@ -384,6 +385,7 @@ didReceiveResponse:(NSURLResponse *)response
         }
         void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
         self.onDelta = nil;
+        self.onThought = nil;
         self.onImage = nil;
         self.onUsage = nil;
         self.onFinish = nil;
@@ -408,6 +410,7 @@ didReceiveResponse:(NSURLResponse *)response
         self.task = nil;
         void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
         self.onDelta = nil;
+        self.onThought = nil;
         self.onImage = nil;
         self.onUsage = nil;
         self.onFinish = nil;
@@ -475,6 +478,7 @@ didReceiveResponse:(NSURLResponse *)response
     void (^finish)(GeminiStreamError, NSInteger, NSString *) = self.onFinish;
     NSInteger status = self.inStreamErrorStatus > 0 ? self.inStreamErrorStatus : self.status;
     self.onDelta = nil;
+    self.onThought = nil;
     self.onImage = nil;
     self.onUsage = nil;
     self.onFinish = nil;
@@ -543,6 +547,8 @@ didReceiveResponse:(NSURLResponse *)response
         if (!isThought && [text isKindOfClass:[NSString class]] && text.length > 0) {
             self.gotText = YES;
             if (self.onDelta) self.onDelta(text);
+        } else if (isThought && [text isKindOfClass:[NSString class]] && text.length > 0) {
+            if (self.onThought) self.onThought(text);   // the reasoning summary (the page shows it under "Thinking")
         }
         NSDictionary *inlineData = [part[@"inlineData"] isKindOfClass:[NSDictionary class]] ? part[@"inlineData"] : nil;
         NSString *mime = [inlineData[@"mimeType"] isKindOfClass:[NSString class]] ? inlineData[@"mimeType"] : @"";

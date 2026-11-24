@@ -3,6 +3,7 @@
 #import "ChoicePopupViewController.h"
 #import "Theme.h"
 #import "Material.h"
+#import "DeleteConfirmViewController.h"
 #import "ConversationStore.h"
 #import "SettingsViewController.h"
 #import "MiniNavigationController.h"
@@ -219,20 +220,29 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
                                               handler:^(UIContextualAction *action, UIView *sourceView, void (^completionHandler)(BOOL)) {
         HistoryViewController *me = weakSelf;
         if (!me) { completionHandler(NO); return; }
-        [ConversationStore deleteConversationWithId:cid];
-        [[NSNotificationCenter defaultCenter] postNotificationName:kNotifConversationDeleted object:nil userInfo:@{ @"id": cid }];
-        NSMutableArray *remaining = [me.entries mutableCopy];
-        NSInteger index = (NSInteger)[remaining indexOfObjectPassingTest:^BOOL(NSDictionary *e, NSUInteger i, BOOL *stop) {
-            return [e[@"id"] isEqualToString:cid];
+        completionHandler(NO);   // the row closes; the dialog decides
+        NSString *shown = currentTitle.length > 0 ? currentTitle : L(@"delete_dialog_chat_untitled");
+        [DeleteConfirmViewController presentFrom:me
+                                           title:L(@"delete_dialog_chat_title")
+                                         message:[NSString stringWithFormat:L(@"delete_dialog_chat_msg"), shown]
+                                    confirmTitle:L(@"delete")
+                                       onConfirm:^{
+            HistoryViewController *again = weakSelf;
+            if (!again) return;
+            [ConversationStore deleteConversationWithId:cid];
+            [[NSNotificationCenter defaultCenter] postNotificationName:kNotifConversationDeleted object:nil userInfo:@{ @"id": cid }];
+            NSMutableArray *remaining = [again.entries mutableCopy];
+            NSInteger index = (NSInteger)[remaining indexOfObjectPassingTest:^BOOL(NSDictionary *e, NSUInteger i, BOOL *stop) {
+                return [e[@"id"] isEqualToString:cid];
+            }];
+            if (index >= 0 && index < (NSInteger)remaining.count) {
+                [remaining removeObjectAtIndex:index];
+                again.entries = remaining;
+                [again.tableView deleteRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:index inSection:0]]
+                                       withRowAnimation:UITableViewRowAnimationAutomatic];
+            }
+            [again updateEmptyState];
         }];
-        if (index >= 0 && index < (NSInteger)remaining.count) {
-            [remaining removeObjectAtIndex:index];
-            me.entries = remaining;
-            [me.tableView deleteRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:index inSection:0]]
-                                withRowAnimation:UITableViewRowAnimationAutomatic];
-        }
-        [me updateEmptyState];
-        completionHandler(YES);
     }];
 
     UIContextualAction *rename =

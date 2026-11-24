@@ -34,6 +34,7 @@ static NSString *const kStreamEndedEarlyMarker  = @"__STREAM_ENDED_EARLY__";    
 @property (assign, nonatomic) NSTimeInterval retryAfterSeconds; // HTTP Retry-After, when supplied by the provider
 
 @property (copy, nonatomic) void (^onDelta)(NSString *text);
+@property (copy, nonatomic) void (^onThought)(NSString *text);   // a piece of the model's reasoning summary, when the provider sends one
 @property (copy, nonatomic) void (^onImage)(NSData *data, NSString *mimeType);
 @property (copy, nonatomic) void (^onUsage)(long long inputTokens, long long outputTokens);
 @property (copy, nonatomic) void (^onFinish)(GeminiStreamError error, NSInteger httpStatus, NSString *detail);

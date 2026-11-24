@@ -8,12 +8,9 @@ static const CGFloat kRowHeight = 68;
 
 #pragma mark - Logos and capability chips
 
-// Claude: the orange starburst (bundled PNG).
+// Claude: the starburst (bundled PNG), in the colour of the app icon in use (orange for the default icon).
 static UIImage *ClaudeLogoImage(void) {
-    static UIImage *image;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ image = [UIImage imageNamed:@"logo_claude_mark.png"]; });
-    return image;
+    return [Theme claudeMarkImage];   // follows the colour of the app icon
 }
 
 // Gemini: the four-point sparkle with Google's blue -> violet -> coral gradient, drawn in code (no asset needed).

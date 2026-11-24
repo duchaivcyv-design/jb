@@ -1,5 +1,6 @@
 #import "RootViewController.h"
 #import "Theme.h"
+#import "Material.h"
 #import "KeyStore.h"
 #import "GeminiClient.h"
 #import "ClaudeClient.h"
@@ -7,6 +8,8 @@
 #import "Provider.h"
 #import "DiagnosticLog.h"
 #import "Strings.h"
+#import "ChoicePopupViewController.h"
+#import "DeleteConfirmViewController.h"
 
 typedef NS_ENUM(NSInteger, StatusKind) {
     StatusNeutral = 0,
@@ -44,6 +47,7 @@ typedef NS_ENUM(NSInteger, StatusKind) {
 
     self.scrollView = [[UIScrollView alloc] init];
     self.scrollView.alwaysBounceVertical = YES;
+    [Material installStretchOnScrollView:self.scrollView];   // Material 3 stretch at the ends
     self.scrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
     if (@available(iOS 11.0, *)) {
         self.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
@@ -90,7 +94,7 @@ typedef NS_ENUM(NSInteger, StatusKind) {
     // Key field (container + text field + paste button)
     self.fieldContainer = [[UIView alloc] init];
     self.fieldContainer.backgroundColor = [Theme surface];
-    self.fieldContainer.layer.cornerRadius = 12;
+    self.fieldContainer.layer.cornerRadius = MR(12, 16);
     self.fieldContainer.layer.borderWidth = 1;
     self.fieldContainer.layer.borderColor = [Theme border].CGColor;
     [self.scrollView addSubview:self.fieldContainer];
@@ -124,7 +128,7 @@ typedef NS_ENUM(NSInteger, StatusKind) {
     [self.primaryButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     [self.primaryButton setTitleColor:[UIColor whiteColor] forState:UIControlStateDisabled];
     self.primaryButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
-    self.primaryButton.layer.cornerRadius = 12;
+    self.primaryButton.layer.cornerRadius = MR(12, 26);
     self.primaryButton.clipsToBounds = YES;
     [self.primaryButton addTarget:self action:@selector(verifyTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.scrollView addSubview:self.primaryButton];
@@ -132,7 +136,7 @@ typedef NS_ENUM(NSInteger, StatusKind) {
     // Google sign-in (Gemini only)
     self.googleButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.googleButton.backgroundColor = [Theme surface];
-    self.googleButton.layer.cornerRadius = 12;
+    self.googleButton.layer.cornerRadius = MR(12, 26);
     self.googleButton.layer.borderWidth = 1;
     self.googleButton.layer.borderColor = [Theme border].CGColor;
     [self.googleButton setTitleColor:[Theme text] forState:UIControlStateNormal];
@@ -529,12 +533,10 @@ typedef NS_ENUM(NSInteger, StatusKind) {
 }
 
 - (void)googleSignOutTapped {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:L(@"google_sign_out")
-                                                                   message:L(@"google_sign_out_confirm")
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+    ChoicePopupViewController *alert = [ChoicePopupViewController alertWithTitle:L(@"google_sign_out") message:L(@"google_sign_out_confirm")];
+    [alert addAction:[ChoiceAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"google_sign_out") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    [alert addAction:[ChoiceAction actionWithTitle:L(@"google_sign_out") style:UIAlertActionStyleDestructive handler:^(id action) {
         RootViewController *me = weakSelf;
         if (!me) return;
         [GoogleAuth signOut];
@@ -544,17 +546,17 @@ typedef NS_ENUM(NSInteger, StatusKind) {
         [me.view setNeedsLayout];
         [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
     }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [alert presentFromViewController:self];
 }
 
 - (void)deleteTapped {
-    UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:L(@"delete_confirm_title")
-                                            message:L(@"delete_confirm_msg")
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"cancel") style:UIAlertActionStyleCancel handler:nil]];
+    NSString *name = [Provider nameFor:self.provider];
     __weak typeof(self) weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:L(@"delete") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    [DeleteConfirmViewController presentFrom:self
+                                       title:[NSString stringWithFormat:L(@"delete_dialog_key_title"), name]
+                                     message:[NSString stringWithFormat:L(@"delete_dialog_key_msg"), name]
+                                confirmTitle:L(@"delete")
+                                   onConfirm:^{
         RootViewController *strongSelf = weakSelf;
         if (!strongSelf) return;
         [KeyStore deleteKeyForProvider:strongSelf.provider];
@@ -563,8 +565,7 @@ typedef NS_ENUM(NSInteger, StatusKind) {
         [strongSelf updateButtonTitle];
         [strongSelf.view setNeedsLayout];
         [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+    }];
 }
 
 #pragma mark - UITextFieldDelegate
@@ -591,6 +592,14 @@ typedef NS_ENUM(NSInteger, StatusKind) {
 - (void)keyboardWillHide:(NSNotification *)note {
     self.scrollView.contentInset = UIEdgeInsetsZero;
     self.scrollView.scrollIndicatorInsets = UIEdgeInsetsZero;
+}
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations {
+    return UIInterfaceOrientationMaskPortrait;   // the key screen is laid out for an upright phone
+}
+
+- (BOOL)shouldAutorotate {
+    return YES;
 }
 
 @end

@@ -126,3 +126,60 @@ Sua khoa developer (beta): bo 50 ma skip; chi co 1 mat khau duy nhat. Sai 15 lan
   * the ripple (10 % of the text colour, as in Material 3) grows to the farthest corner in 450 ms with the emphasized decelerate curve and STAYS while the finger is down (before it faded half-way and left a hard edge); it fades in 300 ms when the finger leaves.
   * the dip (scale 0.975) is kept, on the same spring.
 - Not compiled or run on a device.
+
+[0.8.0 beta 15]
+- Ported from the new source (jb-main): Sign in with Google for Gemini (OAuth 2.0 + PKCE in the system web sheet, refresh token in the Keychain, Bearer token + optional x-goog-user-project instead of the API key).
+  * new GoogleAuth.h/.m; KeyStore hands out a marker in place of the key while Google is the active method, plus named secrets for the refresh token; KeyTier, GeminiClient and GeminiStream authorize each request first (and again on every retry, so a token that expired in between is refreshed).
+  * API key screen (Gemini): "Sign in with Google" button, sign-out with a confirm popup, status line with the account; the settings row shows the Google account.
+  * chat errors say "sign in to Google again" / "no permission, check the API and the Project ID" when the key in use is the Google session.
+  * strings added in vi and en (same key count), build.sh links AuthenticationServices.
+  * merged by hand: the Material radii, the choice popup and the portrait-only orientation of the key screen are kept. The unrelated build.yml and the unused StreamWatchdog of the new source were NOT ported (our streams already have their own watchdog).
+  * requirement: the iOS OAuth client in Google Cloud must use the bundle id com.puc.claudemini; with the OAuth app in "Testing" the refresh token lasts 7 days.
+- Gradient wallpaper, much livelier: 7 blobs instead of 5; each follows its own closed Lissajous path (they cross and pass each other, no more plain circles), with larger reach and laps of 17 to 29 s; stronger breathing (0.78 to 1.22), a brightness pulse, and a slow hue slide to the neighbouring hues and back on its own clock. Still under Reduce Motion.
+- Not compiled or run on a device.
+
+[0.8.0 beta 16]
+- Settings: a Google account card at the very top, in the style of the account card of the system settings: the Claude mark inside two rings of blue dots (the rings turn slowly in opposite directions, still under Reduce Motion), the title "Tài khoản Google" and "Đăng nhập tài khoản Google để không cần dùng key API" (the email once signed in). Material 3: rounded card, dips on the spatial spring when pressed.
+- The card opens a new screen: the big ring + logo, the account state, and buttons: Sign in with Google (filled), Check connection (asks Gemini for the model list with the Google session and shows the result), Sign out (tonal, error colour, with the confirm popup), Use a Gemini API key instead (opens the key screen). Sign-in and sign-out update the card and the Gemini key row at once.
+- New: GoogleAccountViewController.h/.m, 9 strings in vi and en (equal counts).
+- Not compiled or run on a device.
+
+[0.8.0 beta 17]
+- Material 3 stretch overscroll (as Android 12+) at the top and the bottom of every list and page (settings, history, model lists, key screen, font page, account screen...). In the Material design the rubber band that slid the content away is replaced by a stretch:
+  * pulling past an end grows the content along the scroll axis (up to 28 %), anchored on the edge it is pulled from, with a resistance that grows with the distance (tanh curve); the content is not moved;
+  * letting go springs it back, critically damped (stiffness 300, ratio 1), so it never shrinks below its natural size; catching it again while it springs back carries on from where it is on screen;
+  * pulling back the other way gives the finger back to normal scrolling by exactly the distance that is left over;
+  * a fling that runs into an end swells the content by an amount that follows the speed it arrived with (0.045 x speed, at most 16 % of the height, rising in 100 ms) and then springs back;
+  * works for short content too (pull either way), nothing is stretched sideways.
+  * Done on the layer (sublayerTransform about the visible edge), with no delegate: cells, headers and the account card stretch together. Off (the normal rubber band comes back) in the Classic design and with Reduce Motion.
+- The chat page itself (a web view with its own scrolling) keeps the system overscroll.
+- Not compiled or run on a device.
+
+[0.8.0 beta 18]
+- Material 3 delete dialog (DeleteConfirmViewController): a card with a trash can drawn in code. Press Delete: the lid flips open (-38 deg), a sheet drops into the can, the lid snaps shut with a little overshoot, the can squashes and settles (1.25 s film, one haptic when the lid lands), then the card leaves and the action runs. Cancel, a tap outside, and Reduce Motion (no film, 0.2 s) are handled. In the Classic design the old choice pop-up is used.
+  Every place that deletes has its own words: "Xóa API key Gemini/Claude?" (key screen), "Xóa cuộc trò chuyện?" with the conversation title (swipe in History; it had no confirmation before), "Xóa toàn bộ lịch sử?" (Settings).
+- "Thinking" line in the chat (web): a light sweeps over the words and the star turns and breathes; tap to read the thoughts as they stream in; when the answer starts it folds away and settles into "Đã suy nghĩ N giây" (tap again to read the thoughts); an instant answer shows nothing. Real thoughts: Gemini (includeThoughts) and Claude (thinking deltas, summarized) now stream their reasoning summary to the page (onThought). Reduce Motion: no sweep or spin.
+- Material 3 message box: the text on top and growing upward line by line (standard easing), and under it a row with the attach button (outlined circle), the model pill, the mic and the send button.
+  * the model pill: tapping opens the model list; when the model changes the old name rolls up and out while the new one rolls in from below and the pill resizes on the spatial spring (the model button of the top bar is hidden in Material, as the model is now in the box);
+  * the send button: a drawn arrow that wakes up (bump) when there is something to send; while a reply is written the arrow flies up and shrinks and a stop square turns in; press dips it;
+  * a thin conic light (accent) runs round the box while a reply is written (still, soft border under Reduce Motion);
+  * the sent text lifts off the box and fades (0.42 s).
+  The Classic design keeps the old box.
+- Not compiled or run on a device.
+
+[0.8.0 beta 19]
+- Stretch overscroll reacts at once: the few points of movement before the page starts to scroll now count as part of the pull when the page is at an end (no dead zone), so the content starts to stretch the moment the finger moves. A quick flick at an end that has no room to scroll (flick down at the top, up at the bottom) swells the content with the flick speed (like a fling that runs into the end), then springs back.
+- Not compiled or run on a device.
+
+[0.8.0 beta 20]
+- The Claude mark follows the app icon: change the icon (SideStore purple, LiveContainer blue, Dopamine green, Chimera white, Sileo teal, Github red) and the Claude starburst turns that colour everywhere it is drawn (the model list rows of Claude, the Google account card and screen); the default icon keeps the original orange. Theme.claudeMarkColor / claudeMarkImage: the PNG is recoloured by its alpha (source-in), cached per colour; the account ring cross-fades to the new colour when the icon changes. The picture on the empty chat already followed the icon.
+- Not compiled or run on a device.
+
+[0.8.0 beta 21]
+- The rings of dots around the Claude mark (Google account card and screen) now follow the accent colour instead of a fixed blue: the outer ring is the accent, a little lighter and softer (readable on a light card, glowing on a dark one), the inner ring is its neighbour on the colour wheel (+7 % hue) and a little fainter. They change at once with the accent, the skin and the light/dark mode.
+- (beta 20) the Claude mark there already takes the colour of the chosen app icon.
+- Not compiled or run on a device.
+
+[0.8.0 beta 22]
+- Material 3 message box now floats: no panel behind it and no line above it. The wallpaper or the moving gradient runs behind the box down to the bottom edge (also under the home indicator), the page still stops above the box, and the box has a soft shadow (stronger in dark mode). Classic keeps the panel and the line.
+- Not compiled or run on a device.

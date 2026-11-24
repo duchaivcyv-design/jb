@@ -401,3 +401,60 @@ html.is-empty, html.is-empty body { overflow: hidden; height: 100%; overscroll-b
 .md .katex-display { margin: .9em 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; -webkit-overflow-scrolling: touch; }
 
 .thinking-label { color: var(--sec); font-size: calc(12px * var(--uiscale)); margin: calc(4px * var(--uiscale)) 0 calc(6px * var(--uiscale)) 2px; opacity: .9; }
+
+/* ---- "Thinking…" line: sweeping light + turning star; tap to read the thoughts; folds into "Thought for 4 s" ---- */
+.think { position: relative; margin: calc(2px * var(--uiscale)) 0 calc(8px * var(--uiscale)) 0; }
+.think-h {
+  display: -webkit-inline-flex; display: inline-flex; -webkit-align-items: center; align-items: center;
+  gap: calc(8px * var(--uiscale)); height: calc(34px * var(--uiscale)); margin: 0 0 0 calc(-9px * var(--uiscale));
+  padding: 0 calc(9px * var(--uiscale)); border: 0; border-radius: calc(11px * var(--uiscale)); background: none;
+  font: inherit; font-size: calc(15px * var(--uiscale)); font-weight: 500; letter-spacing: -.01em; color: var(--sec);
+  -webkit-appearance: none; appearance: none; -webkit-tap-highlight-color: transparent;
+  -webkit-transition: background-color .2s, color .2s; transition: background-color .2s, color .2s;
+}
+.think-h:active { background: var(--sel); color: var(--text); }
+.think:not(.has-lines) .think-h { cursor: default; }
+.think-ic { -webkit-flex: none; flex: none; width: calc(18px * var(--uiscale)); height: calc(18px * var(--uiscale)); color: var(--accent);
+  -webkit-transition: color .5s; transition: color .5s;
+  -webkit-animation: think-star 2.4s linear infinite; animation: think-star 2.4s linear infinite; }
+.think-ic svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+@-webkit-keyframes think-star { 0% { -webkit-transform: rotate(0deg) scale(1); } 50% { -webkit-transform: rotate(180deg) scale(.78); } 100% { -webkit-transform: rotate(360deg) scale(1); } }
+@keyframes think-star { 0% { transform: rotate(0deg) scale(1); } 50% { transform: rotate(180deg) scale(.78); } 100% { transform: rotate(360deg) scale(1); } }
+.think.is-done .think-ic { color: var(--sec); }
+.think-tx { display: -ms-grid; display: grid; }
+.think-tx > span { -ms-grid-row: 1; grid-row: 1; -ms-grid-column: 1; grid-column: 1; white-space: nowrap;
+  -webkit-transition: opacity .4s, -webkit-transform .5s, -webkit-filter .4s; transition: opacity .4s, transform .5s, filter .4s; }
+.think-a {
+  color: var(--sec);
+  background-image: -webkit-linear-gradient(100deg, var(--sec) 0%, var(--sec) 36%, var(--text) 50%, var(--sec) 64%, var(--sec) 100%);
+  background-image: linear-gradient(100deg, var(--sec) 0%, var(--sec) 36%, var(--text) 50%, var(--sec) 64%, var(--sec) 100%);
+  background-size: 280% 100%; background-position: 100% 0;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  -webkit-animation: think-sweep 1.9s cubic-bezier(.45, 0, .55, 1) infinite; animation: think-sweep 1.9s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+@-webkit-keyframes think-sweep { to { background-position: 0 0; } }
+@keyframes think-sweep { to { background-position: 0 0; } }
+.think-b { opacity: 0; -webkit-transform: translateY(7px); transform: translateY(7px); -webkit-filter: blur(3px); filter: blur(3px); }
+.think.is-done .think-a { opacity: 0; -webkit-transform: translateY(-7px); transform: translateY(-7px); -webkit-filter: blur(3px); filter: blur(3px); -webkit-animation: none; animation: none; }
+.think.is-done .think-b { opacity: 1; -webkit-transform: none; transform: none; -webkit-filter: none; filter: none; }
+.think-cv { display: none; -webkit-flex: none; flex: none; width: calc(15px * var(--uiscale)); height: calc(15px * var(--uiscale)); margin-left: calc(-2px * var(--uiscale));
+  fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: .75;
+  -webkit-transition: -webkit-transform .45s cubic-bezier(.3, 1.5, .5, 1); transition: transform .45s cubic-bezier(.3, 1.5, .5, 1); }
+.think.has-lines .think-cv { display: block; }
+.think-cv path { fill: none; stroke: currentColor; }
+.think.is-open .think-cv { -webkit-transform: rotate(90deg); transform: rotate(90deg); }
+.think-pn { height: 0; overflow: hidden; -webkit-transition: height .5s cubic-bezier(.3, .9, .3, 1); transition: height .5s cubic-bezier(.3, .9, .3, 1); }
+.think-ls { margin: calc(6px * var(--uiscale)) 0 calc(2px * var(--uiscale)) calc(8px * var(--uiscale)); padding: 1px 0 1px calc(17px * var(--uiscale)); border-left: 1.5px solid var(--border);
+  opacity: 0; -webkit-transform: translateY(-4px); transform: translateY(-4px);
+  -webkit-transition: opacity .3s, -webkit-transform .45s; transition: opacity .3s, transform .45s; }
+.think.is-open .think-ls { opacity: 1; -webkit-transform: none; transform: none; -webkit-transition-delay: .06s; transition-delay: .06s; }
+.think-ln { margin: 0; padding: calc(3px * var(--uiscale)) 0; font-size: calc(13.5px * var(--uiscale)); line-height: 1.45; color: var(--sec);
+  opacity: 0; -webkit-transform: translateY(5px); transform: translateY(5px); -webkit-filter: blur(3px); filter: blur(3px);
+  -webkit-transition: opacity .45s .08s, -webkit-transform .55s cubic-bezier(.3, 1.4, .5, 1) .08s, -webkit-filter .45s .08s; transition: opacity .45s .08s, transform .55s cubic-bezier(.3, 1.4, .5, 1) .08s, filter .45s .08s; }
+.think-ln.is-on { opacity: 1; -webkit-transform: none; transform: none; -webkit-filter: none; filter: none; }
+.think.is-done .think-ln { color: var(--sec); opacity: .85; }
+.think-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .think-ic, .think-a { -webkit-animation: none !important; animation: none !important; }
+  .think *, .think-h { -webkit-transition-duration: .001ms !important; transition-duration: .001ms !important; }
+}

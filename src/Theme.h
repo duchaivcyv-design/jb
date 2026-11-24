@@ -110,6 +110,8 @@ typedef NS_ENUM(NSInteger, ThemeSkin) {
 + (BOOL)activeIconDark;                               // the Home Screen icon in use is the dark picture
 + (NSString *)iconDisplayNameForSkin:(ThemeSkin)skin;   // "SideStore", "LiveContainer"... (no "Skin"); "Mặc định" for the default icon
 + (UIImage *)activeIconImage;                         // picture of the icon in use (the logo for the default icon)
++ (UIColor *)claudeMarkColor;                       // colour of the Claude mark: follows the app icon on the Home Screen (nil = the default icon, original orange)
++ (UIImage *)claudeMarkImage;                        // the Claude starburst in that colour (cached per colour)
 + (ThemeSkin)activeIconSkin;                          // the icon that is on the Home Screen now (ThemeSkinClaude = default)
 + (BOOL)respringWithHelper;                           // rootful .deb only: asks the root helper to restart SpringBoard
 + (NSString *)currentIconName;                       // nil = default icon (system alternate-icon API)

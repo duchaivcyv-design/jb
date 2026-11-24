@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (assign, nonatomic) BOOL useFastSpeed;
 @property (assign, nonatomic) NSTimeInterval retryAfterSeconds;
 @property (copy, nonatomic, nullable) void (^onDelta)(NSString *text);
+@property (copy, nonatomic, nullable) void (^onThought)(NSString *text);
 @property (copy, nonatomic, nullable) void (^onImage)(NSData *data, NSString *mimeType);
 @property (copy, nonatomic, nullable) void (^onUsage)(long long inputTokens, long long outputTokens);
 @property (copy, nonatomic, nullable) void (^onFinish)(GeminiStreamError error, NSInteger httpStatus, NSString * _Nullable detail);

@@ -930,6 +930,42 @@ static NSString *WallpaperFileKey(NSInteger index) {
     return [UIImage imageNamed:@"logo.png"];
 }
 
+// The Claude mark follows the app icon: change the icon to the red one and the starburst becomes red everywhere.
++ (UIColor *)claudeMarkColor {
+    ThemeSkin skin = [self activeIconSkin];
+    if (skin == ThemeSkinClaude) return nil;
+    return [self swatchColorForSkin:skin];
+}
+
++ (UIImage *)claudeMarkImage {
+    static UIImage *base;
+    static NSMutableDictionary<NSString *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        base = [UIImage imageNamed:@"logo_claude_mark.png"];
+        cache = [NSMutableDictionary dictionary];
+    });
+    UIColor *color = [self claudeMarkColor];
+    if (!color || !base) return base;
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    [color getRed:&r green:&g blue:&b alpha:&a];
+    NSString *key = [NSString stringWithFormat:@"%.3f-%.3f-%.3f", r, g, b];
+    UIImage *cached = cache[key];
+    if (cached) return cached;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = base.scale;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:base.size format:format];
+    UIImage *tinted = [renderer imageWithActions:^(UIGraphicsImageRendererContext *rc) {
+        CGRect rect = CGRectMake(0, 0, base.size.width, base.size.height);
+        [base drawInRect:rect];
+        CGContextSetBlendMode(rc.CGContext, kCGBlendModeSourceIn);   // keeps the shape (alpha), replaces the colour
+        [color setFill];
+        CGContextFillRect(rc.CGContext, rect);
+    }];
+    if (tinted) cache[key] = tinted;
+    return tinted ?: base;
+}
+
 + (NSString *)iconDisplayNameForSkin:(ThemeSkin)skin {
     NSString *name = [self iconNameForSkin:skin];
     return name.length > 0 ? name : L(@"icon_default");

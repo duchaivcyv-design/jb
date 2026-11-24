@@ -353,7 +353,6 @@
 "font_weight_title" = "Độ đậm chữ";
 "font_weight_normal" = "Bình thường";
 
-
 /* Google OAuth sign-in */
 "google_sign_in" = "Đăng nhập bằng Google";
 "google_sign_in_again" = "Đăng nhập lại bằng Google";
@@ -375,3 +374,28 @@
 "google_status_denied" = "Google từ chối truy cập Gemini (HTTP %ld). Kiểm tra đã bật Generative Language API, email là test user và Project ID đúng.";
 "err_google_auth" = "Đăng nhập Google không còn hiệu lực. Vào Cài đặt › API key Gemini và đăng nhập lại.";
 "err_google_permission" = "Tài khoản/dự án Google không có quyền dùng Gemini. Kiểm tra đã bật Generative Language API và Project ID.";
+
+/* Google account screen */
+"google_account_title" = "Tài khoản Google";
+"google_account_desc" = "Đăng nhập tài khoản Google để không cần dùng key API";
+"google_account_signed_in" = "Đã đăng nhập";
+"google_account_not_signed_in" = "Chưa đăng nhập";
+"google_account_active" = "Gemini đang dùng tài khoản Google này, không cần key API.";
+"google_check" = "Kiểm tra kết nối";
+"google_checking" = "Đang kiểm tra…";
+"google_use_key" = "Dùng API key Gemini thay thế";
+"google_signed_out" = "Đã đăng xuất khỏi Google.";
+
+/* Delete dialogs (each place that deletes has its own words) */
+"delete_dialog_key_title" = "Xóa API key %@?";
+"delete_dialog_key_msg" = "Key %@ sẽ bị xóa khỏi máy này. Bạn cần nhập lại key để tiếp tục dùng.";
+"delete_dialog_chat_title" = "Xóa cuộc trò chuyện?";
+"delete_dialog_chat_msg" = "“%@” và các tệp đính kèm của nó sẽ bị xóa. Không thể hoàn tác.";
+"delete_dialog_chat_untitled" = "Cuộc trò chuyện chưa đặt tên";
+"delete_dialog_all_title" = "Xóa toàn bộ lịch sử?";
+"delete_dialog_all_msg" = "Mọi cuộc trò chuyện và tệp đính kèm trên máy này sẽ bị xóa vĩnh viễn. Không thể hoàn tác.";
+"deleted_announce" = "Đã xóa";
+
+/* Thinking line of the chat */
+"thought_for" = "Đã suy nghĩ %d giây";
+"thought_short" = "Đã suy nghĩ";

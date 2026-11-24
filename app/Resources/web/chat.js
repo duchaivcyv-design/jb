@@ -13,7 +13,9 @@
     edit: 'Edit',
     save: 'Save',
     share: 'Share',
-    thinking: 'Thinking…'
+    thinking: 'Thinking…',
+    thoughtFor: 'Thought for %d s',
+    thoughtShort: 'Thought'
   };
 
   var msgsEl = document.getElementById('messages');
@@ -357,6 +359,164 @@
     }
   }
 
+
+  // ---- "Thinking…" line: a light sweeps over the words while the star turns; tap it to read the thoughts as they come;
+  // when the answer starts it folds away and settles into "Thought for 4 s" (tap again to read the thoughts).
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var STAR = 'M12 1.6c.8 5.3 5.1 9.6 10.4 10.4-5.3.8-9.6 5.1-10.4 10.4C11.2 17.1 6.9 12.8 1.6 12 6.9 11.2 11.2 6.9 12 1.6Z';
+  var CHEVRON = 'm9.5 6 6 6-6 6';
+  var thinkSeq = 0;
+
+  function reducedMotion() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
+  }
+
+  function svgIcon(cls, pathData, filled) {
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    if (cls) { svg.setAttribute('class', cls); }
+    var path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', pathData);
+    if (!filled) { path.setAttribute('class', 'stroke'); }
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function cleanThought(s) {
+    return String(s).replace(/\*\*/g, '').replace(/^#+\s*/, '').replace(/^[-*]\s+/, '').replace(/^\s+|\s+$/g, '');
+  }
+
+  function makeThinking(label) {
+    var id = 'think' + (++thinkSeq);
+    var root = el('div', 'think');
+    var head = el('button', 'think-h');
+    head.type = 'button';
+    head.setAttribute('aria-expanded', 'false');
+    head.setAttribute('aria-controls', id);
+    var icon = el('span', 'think-ic');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.appendChild(svgIcon('', STAR, true));
+    var tx = el('span', 'think-tx');
+    var a = el('span', 'think-a', label);
+    var b = el('span', 'think-b');
+    b.setAttribute('aria-hidden', 'true');
+    tx.appendChild(a);
+    tx.appendChild(b);
+    var cv = svgIcon('think-cv', CHEVRON, false);
+    head.appendChild(icon);
+    head.appendChild(tx);
+    head.appendChild(cv);
+    var panel = el('div', 'think-pn');
+    panel.id = id;
+    var list = el('div', 'think-ls');
+    panel.appendChild(list);
+    root.appendChild(head);
+    root.appendChild(panel);
+    var live = el('p', 'think-live');
+    live.setAttribute('role', 'status');
+    root.appendChild(live);
+    var th = { root: root, head: head, icon: icon, a: a, b: b, panel: panel, list: list, live: live,
+               lines: [], text: '', open: false, done: false, start: Date.now() };
+    head.addEventListener('click', function () { if (th.lines.length) { setThinkOpen(th, !th.open); } });
+    head.addEventListener('keydown', function (e) {
+      if ((e.key === 'Escape' || e.keyCode === 27) && th.open) { e.preventDefault(); setThinkOpen(th, false); }
+    });
+    return th;
+  }
+
+  function fitThinkPanel(th) {
+    if (!th.open) { return; }
+    th.panel.style.height = th.list.offsetHeight + 'px';
+  }
+
+  function setThinkOpen(th, open) {
+    th.open = open;
+    th.head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    th.root.className = th.root.className.replace(/\s*\bis-open\b/g, '') + (open ? ' is-open' : '');
+    var panel = th.panel;
+    if (open) {
+      panel.style.height = th.list.offsetHeight + 'px';
+    } else {
+      panel.style.height = panel.offsetHeight + 'px';   // from "auto" to a number so it can shrink smoothly
+      void panel.offsetHeight;
+      panel.style.height = '0px';
+    }
+    if (current && current.row && current.row._thinking === th && stick) { setTimeout(function () { toBottom(false); }, 520); }
+  }
+
+  function addThinkLine(th, text) {
+    var line = el('p', 'think-ln');
+    var inner = el('span', '', text);
+    line.appendChild(inner);
+    th.list.appendChild(line);
+    th.lines.push(inner);
+    if (th.lines.length === 1) { th.root.className += ' has-lines'; }
+    // appear on the next frame so the transition runs
+    setTimeout(function () { line.className += ' is-on'; }, 20);
+    return inner;
+  }
+
+  function feedThought(th, s) {
+    if (!th || th.done || !s) { return; }
+    th.text += s;
+    var paragraphs = th.text.split(/\n{2,}/);
+    var shown = 0;
+    for (var i = 0; i < paragraphs.length; i++) {
+      var clean = cleanThought(paragraphs[i]);
+      if (!clean) { continue; }
+      if (shown < th.lines.length) {
+        if (th.lines[shown].textContent !== clean) { th.lines[shown].textContent = clean; }
+      } else {
+        addThinkLine(th, clean);
+      }
+      shown++;
+    }
+    fitThinkPanel(th);
+  }
+
+  // The star slows to a stop on a quarter turn (CSS has no way to ask where an animation is, so read the matrix).
+  function settleStar(th) {
+    var icon = th.icon;
+    try {
+      var m = window.getComputedStyle(icon).transform;
+      var v = /matrix\(([^)]+)\)/.exec(m || '');
+      if (!v) { icon.style.animation = 'none'; return; }
+      var n = v[1].split(',');
+      var ca = parseFloat(n[0]), sb = parseFloat(n[1]);
+      var deg = Math.atan2(sb, ca) * 180 / Math.PI;
+      var scale = Math.sqrt(ca * ca + sb * sb);
+      icon.style.webkitAnimation = 'none';
+      icon.style.animation = 'none';
+      icon.style.webkitTransform = icon.style.transform = 'rotate(' + deg + 'deg) scale(' + scale + ')';
+      void icon.offsetWidth;
+      var target = Math.ceil((deg + 25) / 90) * 90;
+      icon.style.webkitTransition = icon.style.transition = 'transform .75s cubic-bezier(.3,1.45,.5,1)';
+      icon.style.webkitTransform = icon.style.transform = 'rotate(' + target + 'deg) scale(1)';
+    } catch (e) { icon.style.animation = 'none'; }
+  }
+
+  // The answer starts (or the reply ends): fold the thoughts away and show how long it took.
+  function finishThinking(row) {
+    var th = row && row._thinking;
+    if (!th || th.done) { return; }
+    th.done = true;
+    var secs = Math.max(1, Math.round((Date.now() - th.start) / 1000));
+    if (!th.lines.length && Date.now() - th.start < 2000) {   // an instant answer: nothing to say about it
+      if (th.root.parentNode) { th.root.parentNode.removeChild(th.root); }
+      row._thinking = null;
+      return;
+    }
+    var label = (S.thoughtFor || S.thoughtShort).replace('%d', secs);
+    th.b.textContent = label;
+    th.root.className += ' is-done';
+    th.a.setAttribute('aria-hidden', 'true');
+    th.b.removeAttribute('aria-hidden');
+    th.live.textContent = label;
+    if (th.open) { setThinkOpen(th, false); }
+    if (!reducedMotion()) { settleStar(th); } else { th.icon.style.animation = 'none'; }
+  }
+
   window.ChatUI = {
     setStrings: function (obj) {
       for (var k in obj) {
@@ -414,25 +574,33 @@
       clearErrors();
       var row = el('div', 'row assistant');
       row._streaming = true;
-      var status = el('div', 'thinking-label', S.thinking);
+      var th = makeThinking(S.thinking);
       var body = el('div', 'body md');
       var content = el('div', 'mdc');
       var dot = el('span', 'dot');
       body.appendChild(content);
       body.appendChild(dot);
-      row.appendChild(status);
+      row.appendChild(th.root);
       row.appendChild(body);
+      row._thinking = th;
       msgsEl.appendChild(row);
-      current = { row: row, body: body, content: content, dot: dot, status: status, text: '', timer: null, rendered: false };
+      current = { row: row, body: body, content: content, dot: dot, status: null, text: '', timer: null, rendered: false };
       refreshRegenerate();
       updateJump();
+    },
+
+    // A piece of the model's reasoning summary (while it is still thinking).
+    thought: function (s) {
+      if (!current || !current.row || !current.row._thinking) { return; }
+      feedThought(current.row._thinking, s);
+      if (stick) { toBottom(false); }
     },
 
     delta: function (s) {
       if (!current) { return; }
       current.text += s;
       var c = current;
-      if (c.status && c.status.parentNode) { c.status.parentNode.removeChild(c.status); c.status = null; }
+      finishThinking(c.row);
       if (!c.rendered) {
         c.rendered = true;
         renderInto(c.content, c.text);
@@ -456,12 +624,12 @@
       current = null;
       if (c.timer) { clearTimeout(c.timer); c.timer = null; }
       if (c.dot.parentNode) { c.dot.parentNode.removeChild(c.dot); }
-      if (c.status && c.status.parentNode) { c.status.parentNode.removeChild(c.status); }
       c.row._streaming = false;
       var text = (finalText !== undefined && finalText !== null && finalText !== '') ? finalText : c.text;
       if (!text) {
         c.row.parentNode.removeChild(c.row);
       } else {
+        finishThinking(c.row);
         renderInto(c.content, text);
         c.row._text = text;
         buildActions(c.row);

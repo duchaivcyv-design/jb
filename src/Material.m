@@ -563,9 +563,11 @@ static void MascotFill(CGFloat *out, NSInteger index) {
 
 #pragma mark - MaterialGradientView
 
-// A soft aurora: a base colour with five large, blurred colour blobs (all derived from the accent) that drift
-// along slow elliptical paths and breathe. No stripes and no spinning bands, only light moving in colour.
-#define GRADIENT_BLOBS 5
+// A soft aurora: a base colour with seven large, blurred colour blobs (all derived from the accent). Each blob follows
+// its own looping Lissajous path (so the lights cross and pass each other instead of circling), breathes, pulses in
+// brightness, and slowly slides through neighbouring hues. No stripes and no spinning bands, only light moving in colour.
+#define GRADIENT_BLOBS 7
+#define GRADIENT_PATH_POINTS 72
 
 @interface MaterialGradientView ()
 @property (strong, nonatomic) NSMutableArray<CAGradientLayer *> *blobs;
@@ -614,13 +616,14 @@ static void MascotFill(CGFloat *out, NSInteger index) {
     self.builtSize = CGSizeZero;
 }
 
-// Colours of one blob: the accent hue moved a little, soft in light mode, deep in dark mode.
-- (NSArray *)colorsForBlob:(NSInteger)index {
-    static const CGFloat hueShift[GRADIENT_BLOBS] = { 0.0, 0.08, -0.07, 0.16, -0.14 };
-    static const CGFloat strength[GRADIENT_BLOBS] = { 0.95, 0.80, 0.85, 0.65, 0.75 };
+// Colours of one blob: the accent hue moved a little (plus `drift`, the slow hue slide), soft in light mode, deep in
+// dark mode.
+- (NSArray *)colorsForBlob:(NSInteger)index hueDrift:(CGFloat)drift {
+    static const CGFloat hueShift[GRADIENT_BLOBS] = { 0.0, 0.08, -0.07, 0.16, -0.14, 0.04, -0.03 };
+    static const CGFloat strength[GRADIENT_BLOBS] = { 0.95, 0.80, 0.85, 0.65, 0.75, 0.70, 0.60 };
     CGFloat h = 0, s = 0, v = 0, alpha = 0;
     [[Theme accent] getHue:&h saturation:&s brightness:&v alpha:&alpha];
-    CGFloat hue = fmod(h + hueShift[index] + 1.0, 1.0);
+    CGFloat hue = fmod(h + hueShift[index] + drift + 2.0, 1.0);
     BOOL dark = [Theme darkMode];
     CGFloat sat = MAX(0.35, MIN(1.0, s * (dark ? 0.95 : 0.62)));
     CGFloat bri = dark ? MIN(0.78, MAX(0.5, v * 0.7)) : 1.0;
@@ -636,22 +639,26 @@ static void MascotFill(CGFloat *out, NSInteger index) {
     self.backgroundColor = [Theme background];
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    for (NSInteger i = 0; i < (NSInteger)self.blobs.count; i++) self.blobs[i].colors = [self colorsForBlob:i];
+    for (NSInteger i = 0; i < (NSInteger)self.blobs.count; i++) self.blobs[i].colors = [self colorsForBlob:i hueDrift:0];
     [CATransaction commit];
-    if (self.window && self.builtSize.width < 1) [self setNeedsLayout];
+    // the hue slide is built from the accent too, so it is rebuilt with it
+    if (self.window) { self.builtSize = CGSizeZero; [self setNeedsLayout]; }
 }
 
 - (void)rebuildMotion {
     CGSize size = self.bounds.size;
     if (size.width < 2 || size.height < 2) return;
     self.builtSize = size;
-    // anchor (x, y), diameter (x longest side), radius of the drift (x, y), seconds per lap, direction
-    static const CGFloat spec[GRADIENT_BLOBS][7] = {
-        { 0.22, 0.18, 1.15, 0.20, 0.10, 23,  1 },
-        { 0.80, 0.32, 1.05, 0.16, 0.16, 29, -1 },
-        { 0.28, 0.72, 1.25, 0.20, 0.12, 33,  1 },
-        { 0.85, 0.86, 1.05, 0.14, 0.14, 27, -1 },
-        { 0.55, 0.48, 0.95, 0.24, 0.18, 37,  1 },
+    // anchor (x, y), diameter (x longest side), reach of the drift (x, y), seconds per lap,
+    // x and y loops per lap (a different pair makes a different figure), phase of x, seconds per breath
+    static const CGFloat spec[GRADIENT_BLOBS][10] = {
+        { 0.22, 0.18, 1.15, 0.34, 0.20, 19, 1, 2, 0.00,  7.0 },
+        { 0.80, 0.32, 1.05, 0.30, 0.24, 23, 2, 1, 0.25,  8.5 },
+        { 0.28, 0.72, 1.25, 0.34, 0.22, 26, 1, 3, 0.50,  9.5 },
+        { 0.85, 0.86, 1.05, 0.28, 0.24, 21, 3, 2, 0.75,  6.5 },
+        { 0.55, 0.48, 0.95, 0.38, 0.28, 29, 2, 3, 0.10, 10.5 },
+        { 0.10, 0.50, 0.90, 0.30, 0.30, 17, 1, 1, 0.60,  7.5 },
+        { 0.65, 0.12, 0.85, 0.32, 0.20, 24, 3, 1, 0.35,  8.0 },
     };
     CGFloat longest = MAX(size.width, size.height);
     BOOL still = UIAccessibilityIsReduceMotionEnabled() || self.window == nil;
@@ -661,30 +668,59 @@ static void MascotFill(CGFloat *out, NSInteger index) {
         CGFloat d = longest * spec[i][2];
         CGPoint center = CGPointMake(size.width * spec[i][0], size.height * spec[i][1]);
         CGFloat rx = size.width * spec[i][3], ry = size.height * spec[i][4];
+        CGFloat seconds = spec[i][5];
+        double fx = spec[i][6], fy = spec[i][7], phase = spec[i][8];
+        CGPoint start = CGPointMake(center.x + rx * sin(2 * M_PI * phase), center.y);
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         blob.bounds = CGRectMake(0, 0, d, d);
-        blob.position = CGPointMake(center.x + rx, center.y);   // where the path below starts
+        blob.position = still ? center : start;
         [CATransaction commit];
-        if (still) { blob.position = center; continue; }
+        if (still) continue;
 
-        UIBezierPath *loop = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(center.x - rx, center.y - ry, rx * 2, ry * 2)];
-        if (spec[i][6] < 0) loop = [loop bezierPathByReversingPath];
+        // one closed lap of a Lissajous figure, sampled; the last point is the first, so the loop has no seam
+        NSMutableArray *points = [NSMutableArray arrayWithCapacity:GRADIENT_PATH_POINTS + 1];
+        for (int k = 0; k <= GRADIENT_PATH_POINTS; k++) {
+            double u = (double)k / GRADIENT_PATH_POINTS;
+            CGFloat x = center.x + rx * sin(2 * M_PI * (fx * u + phase));
+            CGFloat y = center.y + ry * sin(2 * M_PI * fy * u);
+            [points addObject:[NSValue valueWithCGPoint:CGPointMake(x, y)]];
+        }
         CAKeyframeAnimation *drift = [CAKeyframeAnimation animationWithKeyPath:@"position"];
-        drift.path = loop.CGPath;
-        drift.duration = spec[i][5];
+        drift.values = points;
+        drift.calculationMode = kCAAnimationCubic;
+        drift.duration = seconds;
         drift.repeatCount = HUGE_VALF;
-        drift.calculationMode = kCAAnimationPaced;
-        drift.timeOffset = spec[i][5] * (0.13 * (i + 1));   // the blobs do not start in a row
+        drift.timeOffset = seconds * 0.11 * (i + 1);   // the blobs do not start in a row
         [blob addAnimation:drift forKey:@"drift"];
 
         CABasicAnimation *breathe = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
-        breathe.fromValue = @0.88; breathe.toValue = @1.14;
-        breathe.duration = 8 + 1.7 * i;
+        breathe.fromValue = @0.78; breathe.toValue = @1.22;
+        breathe.duration = spec[i][9];
         breathe.autoreverses = YES;
         breathe.repeatCount = HUGE_VALF;
         breathe.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
         [blob addAnimation:breathe forKey:@"breathe"];
+
+        CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"opacity"];
+        pulse.fromValue = @0.62; pulse.toValue = @1.0;
+        pulse.duration = spec[i][9] * 0.8 + 1.3;
+        pulse.autoreverses = YES;
+        pulse.repeatCount = HUGE_VALF;
+        pulse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        pulse.timeOffset = pulse.duration * 0.17 * i;
+        [blob addAnimation:pulse forKey:@"pulse"];
+
+        // the colour slides to the neighbouring hues and back, each blob on its own clock
+        CAKeyframeAnimation *slide = [CAKeyframeAnimation animationWithKeyPath:@"colors"];
+        slide.values = @[[self colorsForBlob:i hueDrift:0], [self colorsForBlob:i hueDrift:0.07],
+                         [self colorsForBlob:i hueDrift:0], [self colorsForBlob:i hueDrift:-0.07],
+                         [self colorsForBlob:i hueDrift:0]];
+        slide.duration = 22 + 3.5 * i;
+        slide.repeatCount = HUGE_VALF;
+        slide.calculationMode = kCAAnimationLinear;
+        slide.timeOffset = slide.duration * 0.19 * i;
+        [blob addAnimation:slide forKey:@"hue"];
     }
 }
 
@@ -889,6 +925,249 @@ static void RunCurve(NSTimeInterval duration, CGPoint c1, CGPoint c2, void (^ani
 }
 
 
+#pragma mark - Stretch overscroll (Material 3: the content stretches at the ends instead of sliding away)
+
+// Android 12+ style: at the top or the bottom the content is not pulled away (the rubber band is switched off); it grows
+// along the scroll axis, anchored on the edge it is pulled from, with a resistance that grows with the distance, and
+// springs back (critically damped, no overshoot) when the finger lifts. A fling that runs into an end makes the content
+// stretch by an amount that follows the speed, then spring back. Done with the scroll view layer's sublayerTransform,
+// so cells, headers and any other content are stretched together, and with no delegate or subclass.
+
+static const CGFloat kStretchMax = 0.28;           // the largest growth (28 %) the content can reach
+static const CGFloat kStretchReach = 2.2;          // how fast it approaches that (tanh of reach * pull / height)
+static const void *kStretchKey = &kStretchKey;
+
+@interface MaterialStretch : NSObject
+@property (weak, nonatomic) UIScrollView *scrollView;
+@property (assign, nonatomic) CGFloat pull;           // finger distance past the edge, in points
+@property (assign, nonatomic) NSInteger edge;         // +1 stretched from the top, -1 from the bottom, 0 none
+@property (assign, nonatomic) CGFloat lastTranslation;
+@property (assign, nonatomic) NSUInteger generation;
+@property (strong, nonatomic) CADisplayLink *link;
+@property (assign, nonatomic) CGFloat lastY;
+@property (assign, nonatomic) CGFloat velocity;
+@property (assign, nonatomic) CFTimeInterval lastTime;
+@end
+
+@implementation MaterialStretch
+
+- (BOOL)enabled { return [Material active] && ![Material reduceMotion]; }
+
+// The rubber band is replaced by the stretch only while it is on (Material 3 design, Reduce Motion off).
+- (void)syncBounces {
+    UIScrollView *sv = self.scrollView;
+    BOOL wanted = ![self enabled];
+    if (sv && sv.bounces != wanted) sv.bounces = wanted;
+}
+
+- (CGFloat)topOffset { return -self.scrollView.adjustedContentInset.top; }
+
+- (CGFloat)bottomOffset {
+    UIScrollView *sv = self.scrollView;
+    return MAX([self topOffset], sv.contentSize.height + sv.adjustedContentInset.bottom - sv.bounds.size.height);
+}
+
+- (CGFloat)viewport {
+    UIScrollView *sv = self.scrollView;
+    UIEdgeInsets inset = sv.adjustedContentInset;
+    return MAX(1, sv.bounds.size.height - inset.top - inset.bottom);
+}
+
+- (CGFloat)extraForPull:(CGFloat)pull { return kStretchMax * tanh(kStretchReach * MAX(0, pull) / [self viewport]); }
+
+- (CGFloat)pullForExtra:(CGFloat)extra {
+    CGFloat ratio = MIN(MAX(extra / kStretchMax, 0), 0.98);
+    return [self viewport] * atanh(ratio) / kStretchReach;
+}
+
+// scale about the edge: p' = A + S(p - A) + (1 - s)(P - A), A = middle of the visible bounds (the layer's anchor), P = the edge
+- (CATransform3D)transformForPull:(CGFloat)pull edge:(NSInteger)edge {
+    UIScrollView *sv = self.scrollView;
+    if (!sv || pull <= 0 || edge == 0) return CATransform3DIdentity;
+    CGFloat s = 1 + [self extraForPull:pull];
+    CGRect bounds = sv.bounds;
+    UIEdgeInsets inset = sv.adjustedContentInset;
+    CGFloat anchor = bounds.origin.y + bounds.size.height / 2;
+    CGFloat edgeY = edge > 0 ? bounds.origin.y + inset.top : bounds.origin.y + bounds.size.height - inset.bottom;
+    CATransform3D scale = CATransform3DMakeScale(1, s, 1);
+    CATransform3D shift = CATransform3DMakeTranslation(0, (1 - s) * (edgeY - anchor), 0);
+    return CATransform3DConcat(scale, shift);
+}
+
+- (void)applyPull:(CGFloat)pull edge:(NSInteger)edge {
+    UIScrollView *sv = self.scrollView;
+    if (!sv) return;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    sv.layer.sublayerTransform = [self transformForPull:pull edge:edge];
+    [CATransaction commit];
+}
+
+// Springs the content back to its size: critically damped, so it never shrinks below its natural size.
+- (void)releaseStretch {
+    UIScrollView *sv = self.scrollView;
+    if (!sv) return;
+    CATransform3D from = sv.layer.sublayerTransform;
+    self.pull = 0;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    sv.layer.sublayerTransform = CATransform3DIdentity;
+    [CATransaction commit];
+    if (from.m22 <= 1.0005) return;
+    CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:@"sublayerTransform"];
+    spring.fromValue = [NSValue valueWithCATransform3D:from];
+    spring.toValue = [NSValue valueWithCATransform3D:CATransform3DIdentity];
+    spring.mass = 1;
+    spring.stiffness = 300;
+    spring.damping = 2 * sqrt(300.0);   // damping ratio 1
+    spring.initialVelocity = 0;
+    spring.duration = spring.settlingDuration;
+    [sv.layer addAnimation:spring forKey:@"stretch"];
+}
+
+- (void)pan:(UIPanGestureRecognizer *)gesture {
+    UIScrollView *sv = self.scrollView;
+    if (!sv) return;
+    [self syncBounces];
+    if (![self enabled]) return;
+    UIView *space = sv.superview ?: sv;
+    CGFloat translation = [gesture translationInView:space].y;
+    switch (gesture.state) {
+        case UIGestureRecognizerStateBegan: {
+            self.generation++;
+            [self stopLink];
+            // the finger caught a stretch that is still springing back: carry on from where it is on screen
+            CALayer *shown = sv.layer.presentationLayer ?: sv.layer;
+            CGFloat extra = shown.sublayerTransform.m22 - 1;
+            [sv.layer removeAnimationForKey:@"stretch"];
+            if (extra > 0.002 && self.edge != 0) {
+                self.pull = [self pullForExtra:extra];
+                [self applyPull:self.pull edge:self.edge];
+            } else {
+                self.pull = 0;
+                self.edge = 0;
+                [self applyPull:0 edge:0];
+            }
+            // The pan only begins after a few points of movement. At an end those points already are a pull, so they
+            // count from the first one (no dead zone): the content starts to stretch the moment the finger moves.
+            BOOL atTop = sv.contentOffset.y <= [self topOffset] + 0.5, atBottom = sv.contentOffset.y >= [self bottomOffset] - 0.5;
+            self.lastTranslation = (atTop || atBottom) ? 0 : translation;
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            CGFloat dy = translation - self.lastTranslation;
+            self.lastTranslation = translation;
+            CGFloat top = [self topOffset], bottom = [self bottomOffset];
+            CGFloat y = sv.contentOffset.y;
+            if (self.edge != 0 && self.pull > 0) {
+                CGFloat pulled = self.pull + (self.edge > 0 ? dy : -dy);
+                if (pulled <= 0) {
+                    // the finger came back past where the stretch started: the list scrolls again by what is left over
+                    CGFloat left = -pulled;
+                    CGFloat y2 = self.edge > 0 ? top + left : bottom - left;
+                    self.pull = 0;
+                    self.edge = 0;
+                    sv.contentOffset = CGPointMake(sv.contentOffset.x, MIN(MAX(y2, top), bottom));
+                } else {
+                    self.pull = pulled;
+                    sv.contentOffset = CGPointMake(sv.contentOffset.x, self.edge > 0 ? top : bottom);   // pinned to the edge
+                }
+            } else if (y <= top + 0.5 && dy > 0) {
+                self.edge = 1;
+                self.pull = dy;
+            } else if (y >= bottom - 0.5 && dy < 0) {
+                self.edge = -1;
+                self.pull = -dy;
+            }
+            [self applyPull:self.pull edge:self.edge];
+            break;
+        }
+        default: {   // ended, cancelled, failed
+            CGFloat flick = [gesture velocityInView:space].y;
+            CGFloat top = [self topOffset], bottom = [self bottomOffset], y = sv.contentOffset.y;
+            BOOL flickedIntoTop = y <= top + 0.5 && flick > 250;
+            BOOL flickedIntoBottom = y >= bottom - 0.5 && flick < -250;
+            if (self.pull > 0) {
+                [self releaseStretch];
+            } else if (flickedIntoTop || flickedIntoBottom) {
+                // a quick flick at an end that has no room to scroll: the content swells with the speed, then springs back
+                [self absorbSpeed:fabs(flick) edge:flickedIntoTop ? 1 : -1];
+            } else {
+                // a fling that reaches an end is followed to see how fast it arrives
+                __weak typeof(self) weak = self;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    MaterialStretch *me = weak;
+                    if (me && me.scrollView.isDecelerating) [me startLink];
+                });
+            }
+            break;
+        }
+    }
+}
+
+#pragma mark Fling into an end
+
+- (void)startLink {
+    if (self.link || !self.scrollView) return;
+    self.lastY = self.scrollView.contentOffset.y;
+    self.lastTime = 0;
+    self.velocity = 0;
+    self.link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
+    [self.link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopLink {
+    [self.link invalidate];
+    self.link = nil;
+}
+
+- (void)tick:(CADisplayLink *)link {
+    UIScrollView *sv = self.scrollView;
+    if (!sv || !sv.isDecelerating || sv.isDragging || ![self enabled]) { [self stopLink]; return; }
+    CGFloat y = sv.contentOffset.y;
+    CGFloat top = [self topOffset], bottom = [self bottomOffset];
+    CGFloat before = self.velocity;
+    if (self.lastTime > 0 && link.timestamp > self.lastTime) self.velocity = (y - self.lastY) / (link.timestamp - self.lastTime);
+    BOOL hitTop = y <= top + 0.5 && self.lastY > top + 0.5;
+    BOOL hitBottom = y >= bottom - 0.5 && self.lastY < bottom - 0.5;
+    self.lastY = y;
+    self.lastTime = link.timestamp;
+    if (!hitTop && !hitBottom) return;
+    [self stopLink];
+    CGFloat speed = fabs(before);
+    if (speed < 250) return;
+    [self absorbSpeed:speed edge:hitTop ? 1 : -1];
+}
+
+// The content swells for a moment in proportion to the speed it arrived with, then springs back.
+- (void)absorbSpeed:(CGFloat)speed edge:(NSInteger)edge {
+    UIScrollView *sv = self.scrollView;
+    if (!sv) return;
+    NSUInteger token = ++self.generation;
+    CGFloat peak = MIN(speed * 0.045, [self viewport] * 0.16);
+    self.edge = edge;
+    CATransform3D from = sv.layer.sublayerTransform;
+    [self applyPull:peak edge:edge];
+    self.pull = peak;
+    CABasicAnimation *rise = [CABasicAnimation animationWithKeyPath:@"sublayerTransform"];
+    rise.fromValue = [NSValue valueWithCATransform3D:from];
+    rise.toValue = [NSValue valueWithCATransform3D:sv.layer.sublayerTransform];
+    rise.duration = MaterialDurationShort3 * 0.7;
+    rise.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0 :0 :0.2 :1];
+    __weak typeof(self) weak = self;
+    [CATransaction begin];
+    [CATransaction setCompletionBlock:^{
+        MaterialStretch *me = weak;
+        if (me && me.generation == token) [me releaseStretch];
+    }];
+    [sv.layer addAnimation:rise forKey:@"stretch"];
+    [CATransaction commit];
+}
+
+- (void)dealloc { [self.link invalidate]; }
+
+@end
+
 @implementation Material
 
 + (BOOL)active { return [Theme materialDesign]; }
@@ -1024,7 +1303,19 @@ static const void *kPressHandlerKey = &kPressHandlerKey;
     [self animateSpatial:MaterialMotionDefault delay:0.035 * order animations:^{ cell.alpha = 1; cell.transform = CGAffineTransformIdentity; } completion:nil];
 }
 
++ (void)installStretchOnScrollView:(UIScrollView *)scrollView {
+    if (!scrollView) return;
+    MaterialStretch *existing = objc_getAssociatedObject(scrollView, kStretchKey);
+    if (existing) { [existing syncBounces]; return; }
+    MaterialStretch *stretch = [[MaterialStretch alloc] init];
+    stretch.scrollView = scrollView;
+    [scrollView.panGestureRecognizer addTarget:stretch action:@selector(pan:)];
+    objc_setAssociatedObject(scrollView, kStretchKey, stretch, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [stretch syncBounces];
+}
+
 + (void)installTableEffects:(UITableView *)table {
+    [self installStretchOnScrollView:table];
     if (objc_getAssociatedObject(table, kPressHandlerKey)) return;
     MaterialPressHandler *handler = [[MaterialPressHandler alloc] init];
     handler.table = table;

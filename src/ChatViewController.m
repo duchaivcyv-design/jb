@@ -21,6 +21,7 @@
 #import "ModelPickerViewController.h"
 #import "ModelPopupViewController.h"
 #import "ConfirmPopupViewController.h"
+#import "ComposerViews.h"
 #import "ChoicePopupViewController.h"
 #import "UpdateManager.h"
 #import "KeyTier.h"
@@ -200,7 +201,9 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (strong, nonatomic) UILabel *reasoningFastHintLabel;
 @property (strong, nonatomic) UITextView *textView;
 @property (strong, nonatomic) UILabel *placeholderLabel;
-@property (strong, nonatomic) UIButton *sendButton;
+@property (strong, nonatomic) ComposerSendButton *sendButton;
+@property (strong, nonatomic) ComposerModelPill *modelPill;     // Material 3 message box: the model name inside the box
+@property (strong, nonatomic) ComposerGlowView *glowView;        // the light that runs round the box while a reply is written
 @property (strong, nonatomic) VoiceChatManager *voiceManager;
 @property (assign, nonatomic) BOOL voiceRecording;
 @property (copy, nonatomic) NSString *dictationBase;          // what was typed before the mic was pressed
@@ -326,6 +329,7 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 // trip to another app gets a little extra running time. Both are released as soon as the reply ends.
 - (void)setStreaming:(BOOL)streaming {
     _streaming = streaming;
+    [self.glowView setActive:(streaming && [Material active]) animated:self.view.window != nil];
     UIApplication *app = [UIApplication sharedApplication];
     if (streaming) {
         app.idleTimerDisabled = YES;
@@ -931,7 +935,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.placeholderLabel.textColor = [UIColor colorWithWhite:0.6 alpha:1];
     [self.inputBox addSubview:self.placeholderLabel];
 
-    self.sendButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.sendButton = [ComposerSendButton buttonWithType:UIButtonTypeCustom];
     self.sendButton.layer.cornerRadius = 18;
     self.sendButton.tintColor = [UIColor whiteColor];
     [self.sendButton addTarget:self action:@selector(sendTapped) forControlEvents:UIControlEventTouchUpInside];
@@ -943,6 +947,14 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.micButton.accessibilityLabel = @"Mic";
     [self.micButton addTarget:self action:@selector(micTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.inputBox addSubview:self.micButton];
+
+    self.modelPill = [[ComposerModelPill alloc] init];
+    self.modelPill.textColor = [Theme secondaryText];
+    [self.modelPill addTarget:self action:@selector(modelTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.inputBox addSubview:self.modelPill];
+
+    self.glowView = [[ComposerGlowView alloc] init];
+    [self.inputBox insertSubview:self.glowView atIndex:0];
 }
 
 #pragma mark - Layout
@@ -1018,50 +1030,123 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     CGFloat scale = [AppSettings uiScale];
     CGFloat boxWidth = MAX(140, width - 24);
     BOOL searchActive = [AppSettings webSearchEnabled];
-    CGFloat leftPad = 40;
-    CGFloat rightPad = 84;
-    CGFloat textWidth = MAX(40, boxWidth - leftPad - rightPad);
-    CGFloat minInputHeight = 38.0;
-    CGFloat fit = [self.textView sizeThatFits:CGSizeMake(textWidth, CGFLOAT_MAX)].height;
-    CGFloat textHeight = MIN(MAX(fit, minInputHeight), kMaxInputHeight);
-    self.textView.scrollEnabled = fit > kMaxInputHeight;
+    BOOL material = [Material active];
 
-    CGFloat searchRowHeight = searchActive ? 27.0 : 0.0;
-    CGFloat boxHeight = textHeight + 8 + searchRowHeight;
-    CGFloat toolsY = 8 + stripHeight;
-    CGFloat boxY = toolsY + kToolsRowHeight + 4;
-    CGFloat barHeight = boxY + boxHeight + 8;
-    self.inputBar.frame = CGRectMake(0, height - bottomInset - barHeight, width, barHeight);
-    [self.inputBar viewWithTag:1001].frame = CGRectMake(0, 0, width, 1);
+    if (material) {
+        // Material 3 message box: the text on top (it grows upward line by line), and below it a row with the attach
+        // button, the model pill, the mic and the send button.
+        CGFloat side = 10, buttonSize = 36, barHeight = 40, topPad = 6, bottomPad = 8;
+        CGFloat textWidth = MAX(40, boxWidth - 2 * side);
+        CGFloat fit = [self.textView sizeThatFits:CGSizeMake(textWidth, CGFLOAT_MAX)].height;
+        CGFloat textHeight = MIN(MAX(fit, 38.0), kMaxInputHeight);
+        self.textView.scrollEnabled = fit > kMaxInputHeight;
+        CGFloat searchRowHeight = searchActive ? 27.0 : 0.0;
+        CGFloat textY = topPad + searchRowHeight;
+        CGFloat barY = textY + textHeight + 2;
+        CGFloat boxHeight = barY + barHeight + bottomPad;
+        CGFloat toolsY = 8 + stripHeight;
+        CGFloat boxY = toolsY + kToolsRowHeight + 4;
+        CGFloat barTotal = boxY + boxHeight + 8;
+        self.inputBar.frame = CGRectMake(0, height - bottomInset - barTotal, width, barTotal);
+        [self.inputBar viewWithTag:1001].frame = CGRectMake(0, 0, width, 1);
+        self.attachStrip.hidden = !showStrip;
+        self.attachStrip.frame = CGRectMake(0, 8, width, stripHeight);
+        self.toolRow.frame = CGRectMake(12, toolsY, MAX(40, width - 24), kToolsRowHeight);
+        self.inputBox.frame = CGRectMake(12, boxY, boxWidth, boxHeight);
+        CGFloat radius = MIN(MR(22, 28), boxHeight / 2.0);
+        self.inputBox.layer.cornerRadius = radius;
+        self.glowView.cornerRadiusValue = radius;
+        self.glowView.frame = self.inputBox.bounds;
 
-    self.attachStrip.hidden = !showStrip;
-    self.attachStrip.frame = CGRectMake(0, 8, width, stripHeight);
-    self.toolRow.frame = CGRectMake(12, toolsY, MAX(40, width - 24), kToolsRowHeight);
-    CGFloat toolWidth = floor(MAX(40, width - 24) / 4.0);
-    self.reasoningButton.frame = CGRectMake(0, 0, toolWidth, kToolsRowHeight);
-    self.searchButton.frame = CGRectMake(toolWidth, 0, toolWidth, kToolsRowHeight);
-    self.fastButton.frame = CGRectMake(toolWidth * 2, 0, toolWidth, kToolsRowHeight);
-    self.mentionButton.frame = CGRectMake(toolWidth * 3, 0, toolWidth, kToolsRowHeight);
-    self.inputBox.frame = CGRectMake(12, boxY, boxWidth, boxHeight);
-    // A corner radius larger than half the height bends the ends of the pill into points: never go over it.
-    self.inputBox.layer.cornerRadius = MIN(MR(22, 28), boxHeight / 2.0);
+        CGFloat rowY = barY + (barHeight - buttonSize) / 2;
+        self.attachButton.frame = CGRectMake(side, rowY, buttonSize, buttonSize);
+        self.attachButton.layer.cornerRadius = buttonSize / 2;
+        self.attachButton.layer.borderWidth = 1;
+        self.attachButton.layer.borderColor = [Theme border].CGColor;
+        self.sendButton.transform = CGAffineTransformIdentity;
+        self.sendButton.frame = CGRectMake(boxWidth - side - buttonSize, rowY, buttonSize, buttonSize);
+        self.micButton.frame = CGRectMake(boxWidth - side - buttonSize - 6 - buttonSize, rowY, buttonSize, buttonSize);
+        CGFloat pillX = side + buttonSize + 6;
+        CGFloat pillMax = CGRectGetMinX(self.micButton.frame) - 6 - pillX;
+        CGFloat pillWidth = [self.modelPill preferredWidthWithMax:pillMax];
+        if (!self.modelPill.rolling) {
+            self.modelPill.frame = CGRectMake(pillX, barY + (barHeight - 34) / 2, pillWidth, 34);
+        } else {   // the name is rolling over: the pill resizes itself, only its place is kept
+            CGRect f = self.modelPill.frame; f.origin = CGPointMake(pillX, barY + (barHeight - 34) / 2); self.modelPill.frame = f;
+        }
+        self.searchChipButton.hidden = !searchActive;
+        if (searchActive) self.searchChipButton.frame = CGRectMake(side + 6, topPad + 3, 94, 22);
+        self.textView.frame = CGRectMake(side, textY, textWidth, textHeight);
+        CGFloat phHeight = MIN(textHeight, 22.0 * scale);
+        self.placeholderLabel.frame = CGRectMake(side + 11, textY + (textHeight - phHeight) * 0.5, textWidth - 12, phHeight);
+        self.modelPill.hidden = NO;
+        [self updateToolButtons];
+    } else {
+        self.modelPill.hidden = YES;
+        self.glowView.frame = self.inputBox.bounds;
+        self.attachButton.layer.borderWidth = 0;
+        CGFloat leftPad = 40;
+        CGFloat rightPad = 84;
+        CGFloat textWidth = MAX(40, boxWidth - leftPad - rightPad);
+        CGFloat minInputHeight = 38.0;
+        CGFloat fit = [self.textView sizeThatFits:CGSizeMake(textWidth, CGFLOAT_MAX)].height;
+        CGFloat textHeight = MIN(MAX(fit, minInputHeight), kMaxInputHeight);
+        self.textView.scrollEnabled = fit > kMaxInputHeight;
 
-    CGFloat centerY = round((boxHeight - 36.0) * 0.5);
-    self.attachButton.frame = CGRectMake(5, centerY, 36, 36);
-    self.searchChipButton.hidden = !searchActive;
-    if (searchActive) self.searchChipButton.frame = CGRectMake(46, 5, 94, 22);
-    self.textView.frame = CGRectMake(leftPad, searchRowHeight + 4, textWidth, textHeight);
-    CGFloat phHeight = MIN(textHeight, 22.0 * scale);
-    self.placeholderLabel.frame = CGRectMake(leftPad + 11, searchRowHeight + 4 + (textHeight - phHeight) * 0.5, textWidth - 12, phHeight);
-    self.sendButton.transform = CGAffineTransformIdentity;
-    self.sendButton.frame = CGRectMake(boxWidth - 36 - 5, centerY, 36, 36);
-    self.micButton.frame = CGRectMake(boxWidth - 36 - 5 - 40, centerY, 36, 36);
-    [self updateToolButtons];
+        CGFloat searchRowHeight = searchActive ? 27.0 : 0.0;
+        CGFloat boxHeight = textHeight + 8 + searchRowHeight;
+        CGFloat toolsY = 8 + stripHeight;
+        CGFloat boxY = toolsY + kToolsRowHeight + 4;
+        CGFloat barHeight = boxY + boxHeight + 8;
+        self.inputBar.frame = CGRectMake(0, height - bottomInset - barHeight, width, barHeight);
+        [self.inputBar viewWithTag:1001].frame = CGRectMake(0, 0, width, 1);
+
+        self.attachStrip.hidden = !showStrip;
+        self.attachStrip.frame = CGRectMake(0, 8, width, stripHeight);
+        self.toolRow.frame = CGRectMake(12, toolsY, MAX(40, width - 24), kToolsRowHeight);
+        CGFloat toolWidth = floor(MAX(40, width - 24) / 4.0);
+        self.reasoningButton.frame = CGRectMake(0, 0, toolWidth, kToolsRowHeight);
+        self.searchButton.frame = CGRectMake(toolWidth, 0, toolWidth, kToolsRowHeight);
+        self.fastButton.frame = CGRectMake(toolWidth * 2, 0, toolWidth, kToolsRowHeight);
+        self.mentionButton.frame = CGRectMake(toolWidth * 3, 0, toolWidth, kToolsRowHeight);
+        self.inputBox.frame = CGRectMake(12, boxY, boxWidth, boxHeight);
+        // A corner radius larger than half the height bends the ends of the pill into points: never go over it.
+        self.inputBox.layer.cornerRadius = MIN(MR(22, 28), boxHeight / 2.0);
+
+        CGFloat centerY = round((boxHeight - 36.0) * 0.5);
+        self.attachButton.frame = CGRectMake(5, centerY, 36, 36);
+        self.searchChipButton.hidden = !searchActive;
+        if (searchActive) self.searchChipButton.frame = CGRectMake(46, 5, 94, 22);
+        self.textView.frame = CGRectMake(leftPad, searchRowHeight + 4, textWidth, textHeight);
+        CGFloat phHeight = MIN(textHeight, 22.0 * scale);
+        self.placeholderLabel.frame = CGRectMake(leftPad + 11, searchRowHeight + 4 + (textHeight - phHeight) * 0.5, textWidth - 12, phHeight);
+        self.sendButton.transform = CGAffineTransformIdentity;
+        self.sendButton.frame = CGRectMake(boxWidth - 36 - 5, centerY, 36, 36);
+        self.micButton.frame = CGRectMake(boxWidth - 36 - 5 - 40, centerY, 36, 36);
+        [self updateToolButtons];
+
+    }
 
     self.webView.frame = CGRectMake(0, 0, width, CGRectGetMinY(self.inputBar.frame));
-    self.wallpaperView.frame = self.webView.frame;
-    self.gradientView.frame = self.webView.frame;
+    // Material 3: the message box floats (no panel and no line under it), so the wallpaper or the moving gradient runs
+    // behind it down to the bottom edge; the page itself still stops above the box.
+    CGRect backdrop = material ? CGRectMake(0, 0, width, height) : self.webView.frame;
+    self.wallpaperView.frame = backdrop;
+    self.gradientView.frame = backdrop;
     self.dimView.frame = self.wallpaperView.bounds;
+    [self.inputBar viewWithTag:1001].hidden = material;
+    self.inputBar.backgroundColor = material ? [UIColor clearColor] : [Theme background];
+    CALayer *boxLayer = self.inputBox.layer;
+    if (material) {
+        boxLayer.shadowColor = [UIColor blackColor].CGColor;
+        boxLayer.shadowOpacity = [Theme darkMode] ? 0.38 : 0.14;
+        boxLayer.shadowRadius = 14;
+        boxLayer.shadowOffset = CGSizeMake(0, 5);
+        boxLayer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.inputBox.bounds cornerRadius:boxLayer.cornerRadius].CGPath;
+    } else {
+        boxLayer.shadowOpacity = 0;
+        boxLayer.shadowPath = nil;
+    }
     self.chatRightOverlayButton.frame = self.chatStageView.bounds;
     if (self.historyDrawerOpen) {
         [self.chatStageView bringSubviewToFront:self.chatRightOverlayButton];
@@ -1278,7 +1363,29 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
 - (void)relayoutAnimated {
     [self.view setNeedsLayout];
+    if ([Material active] && ![Material reduceMotion]) {   // the box grows upward line by line with the standard easing
+        [Material animateStandard:0.25 animations:^{ [self.view layoutIfNeeded]; } completion:nil];
+        return;
+    }
     [UIView animateWithDuration:0.15 animations:^{ [self.view layoutIfNeeded]; }];
+}
+
+// Material 3: the text that was sent lifts off the box and fades while the box shrinks back.
+- (void)flyTextUp:(NSString *)text {
+    if (![Material active] || [Material reduceMotion] || text.length == 0 || self.view.window == nil) return;
+    CGRect source = [self.chatStageView convertRect:self.textView.frame fromView:self.inputBox];
+    UILabel *ghost = [[UILabel alloc] initWithFrame:CGRectInset(source, 6, 9)];
+    ghost.text = text;
+    ghost.font = self.textView.font;
+    ghost.textColor = [Theme text];
+    ghost.numberOfLines = 0;
+    ghost.lineBreakMode = NSLineBreakByTruncatingTail;
+    ghost.userInteractionEnabled = NO;
+    [self.chatStageView addSubview:ghost];
+    [UIView animateWithDuration:0.42 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        ghost.alpha = 0;
+        ghost.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.97, 0.97), CGAffineTransformMakeTranslation(0, -22));
+    } completion:^(BOOL finished) { [ghost removeFromSuperview]; }];
 }
 
 #pragma mark - Keyboard
@@ -1477,12 +1584,16 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
     [self.modelButton setTitleColor:[Theme text] forState:UIControlStateNormal];
     [self updateModelTitle];
-    self.inputBar.backgroundColor = [Theme background];
+    self.inputBar.backgroundColor = [Material active] ? [UIColor clearColor] : [Theme background];
     [self.inputBar viewWithTag:1001].backgroundColor = [Theme border];
     self.inputBox.backgroundColor = [Theme surface];
     self.inputBox.layer.borderColor = [Theme border].CGColor;
     self.inputBox.layer.cornerRadius = MIN(MR(22, 28), MAX(1, self.inputBox.bounds.size.height / 2.0));   // Material 3 shape; changes at once with the design switch
     self.attachButton.tintColor = [Theme secondaryText];
+    self.modelPill.textColor = [Theme secondaryText];
+    [self.glowView refreshColors];
+    if (![Material active]) [self.glowView setActive:NO animated:NO];
+    else if (self.streaming) [self.glowView setActive:YES animated:NO];
     self.textView.textColor = [Theme text];
     self.textView.tintColor = [Theme accent];
     UIKeyboardAppearance appearance = [Theme keyboardAppearance];
@@ -1566,7 +1677,9 @@ static const CGFloat kDrawerWidthRatio = 0.62;
                                           @"edit": L(@"edit"),
                                           @"save": L(@"save_reply"),
                                           @"share": L(@"share_image"),
-                                          @"thinking": ([AppSettings reasoningLevel] >= AIReasoningLevelHigh) ? @"Đang suy luận sâu…" : @"Đang xử lý…" }]];
+                                          @"thinking": ([AppSettings reasoningLevel] >= AIReasoningLevelHigh) ? @"Đang suy luận sâu…" : @"Đang xử lý…",
+                                          @"thoughtFor": L(@"thought_for"),
+                                          @"thoughtShort": L(@"thought_short") }]];
 }
 
 - (NSArray *)webAttachmentsFrom:(NSArray *)attachments conversation:(NSString *)cid {
@@ -1771,6 +1884,12 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [title appendAttributedString:[[NSAttributedString alloc] initWithString:@" \u25BE" attributes:@{
         NSFontAttributeName: [UIFont systemFontOfSize:11 weight:UIFontWeightRegular], NSForegroundColorAttributeName: [Theme secondaryText] }]];
     [self.modelButton setAttributedTitle:title forState:UIControlStateNormal];
+    // Material 3: the model lives in the message box (its name rolls over when it changes), not in the bar above
+    BOOL material = [Material active];
+    self.modelButton.hidden = material;
+    [self.modelPill setTitle:main animated:material && self.view.window != nil];
+    self.modelPill.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", L(@"choose_model"), main];
+    if (material) [self.view setNeedsLayout];
 
     CGFloat available = self.view.bounds.size.width > 0 ? self.view.bounds.size.width : [UIScreen mainScreen].bounds.size.width;
     CGFloat maxWidth = MAX(120, available - 44 - 44 - 40);
@@ -2000,7 +2119,14 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 - (void)updateSendButton {
     BOOL hasContent = [self trimmedInput].length > 0 || self.pendingAttachments.count > 0;
     BOOL canSend = hasContent && self.webReady && self.importsInFlight == 0;
-    if (self.streaming) {
+    BOOL material = [Material active];
+    self.sendButton.materialStyle = material;
+    if (material) {
+        // Material 3: a drawn arrow that wakes up when there is something to send and turns into a stop square while
+        // the reply is being written
+        [self.sendButton setImage:nil forState:UIControlStateNormal];
+        [self.sendButton applyReady:canSend generating:self.streaming animated:self.view.window != nil];
+    } else if (self.streaming) {
         [self.sendButton setImage:[Theme iconStop] forState:UIControlStateNormal];
         self.sendButton.backgroundColor = [Theme accent];
     } else {
@@ -2664,6 +2790,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     [self callJS:@"addUser" args:@[text, [self webAttachmentsFrom:attachments conversation:cid], @([messages count] - 1)]];
     [self.pendingAttachments removeAllObjects];
     [self refreshAttachStrip];
+    [self flyTextUp:text];
     self.textView.text = @"";
     [self textViewDidChange:self.textView];
     [self startStreamingReply];
@@ -2959,6 +3086,11 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         } else {
             [me callJS:@"delta" args:@[text]];
         }
+    };
+    stream.onThought = ^(NSString *text) {
+        ChatViewController *me = weakSelf;
+        if (!me || me.stream != weakStream || text.length == 0) return;
+        [me callJS:@"thought" args:@[text]];
     };
     stream.onImage = ^(NSData *data, NSString *mimeType) {
         ChatViewController *me = weakSelf;
@@ -3269,9 +3401,10 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
 - (NSString *)messageForError:(GeminiStreamError)error status:(NSInteger)status detail:(NSString *)detail {
     NSString *base = nil;
     BOOL showDetail = NO;
+    BOOL viaGoogle = self.model.length > 0 && [Provider forModelId:self.model] == AIProviderGemini && [KeyStore geminiUsesGoogleAccount];
     switch (error) {
-        case GeminiStreamErrorInvalidKey:       base = L(@"err_invalid_key"); break;
-        case GeminiStreamErrorPermissionDenied: base = L(@"err_permission"); showDetail = YES; break;
+        case GeminiStreamErrorInvalidKey:       base = viaGoogle ? L(@"err_google_auth") : L(@"err_invalid_key"); break;
+        case GeminiStreamErrorPermissionDenied: base = viaGoogle ? L(@"err_google_permission") : L(@"err_permission"); showDetail = YES; break;
         case GeminiStreamErrorModelNotFound:    base = L(@"err_model_not_found"); break;
         case GeminiStreamErrorRateLimited:      base = L(@"err_rate"); showDetail = YES; break;
         case GeminiStreamErrorNetwork:          base = L(@"err_network"); showDetail = YES; break;
