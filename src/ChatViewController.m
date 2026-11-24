@@ -27,6 +27,7 @@
 #import "KeyTier.h"
 #import "OfficeExport.h"
 #import "VoiceChatManager.h"
+#import "GoogleAuth/GoogleAuth.h"
 #import "FontStyle.h"
 #import "Material.h"
 #import <math.h>
