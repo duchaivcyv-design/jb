@@ -1,3 +1,17 @@
+ClaudeMini 0.8.0-23 (beta): thinking, date, web, stutter
+- Thinking: the thoughts now show live, outside the folded line, typed out smoothly while the model thinks; they fold into
+  "Thought for N s" when the answer starts (tap to read again; fold it yourself and it stays folded).
+- Thinking effort follows the question: a short simple message uses minimal/low effort (no more 35 s for "what year is it");
+  long, technical or multi-part questions use at least High, the hardest at least Very high. See "reasoning:" in the
+  diagnostics log. Note: Gemini only returns a short SUMMARY of its thoughts; a higher effort makes it think longer and
+  the summary richer, but its length and wording are the provider's.
+- Date: every request now states today's date, so the model no longer answers with its training year.
+- Web search is ON by default (new setting key, so it starts on for everyone; the search button still turns it off).
+- Stutter: smooth typing of the answer (steps grow with the backlog, so bursts catch up without stopping), long replies are
+  redrawn less often, and a growing code block is no longer re-highlighted/cached on every redraw (cost grew with the
+  square of the reply and froze the page).
+- Google sign-in: a 401/403 now triggers one automatic retry with a fresh access token before the error is shown.
+
 ClaudeMini 0.7.4-1 (beta)
 
 Chat:

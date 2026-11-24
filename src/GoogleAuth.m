@@ -294,6 +294,13 @@ static NSMutableArray *gWaiters;   // blocks waiting for the refresh that is in 
 
 #pragma mark - Sign out
 
++ (void)discardAccessToken {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        gAccessToken = nil;
+        gAccessExpiry = nil;
+    });
+}
+
 + (void)signOut {
     NSString *refresh = [KeyStore loadSecretNamed:kRefreshSecret];
     if (refresh.length > 0) {

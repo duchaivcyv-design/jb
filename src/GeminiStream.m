@@ -97,7 +97,7 @@
     if (modelCap <= 0) modelCap = 8192;
     NSInteger outputCeiling = requestedOutputTokens > 0 ? MIN(requestedOutputTokens, modelCap) : modelCap;
     NSString *lowerModel = self.model.lowercaseString;
-    AIReasoningLevel reasoning = [AppSettings reasoningLevel];
+    AIReasoningLevel reasoning = self.adaptiveReasoning > 0 ? (AIReasoningLevel)(self.adaptiveReasoning - 1) : [AppSettings reasoningLevel];
 
     NSMutableDictionary *generationConfig = [NSMutableDictionary dictionary];
     BOOL supportsThinking = [lowerModel containsString:@"gemini-2.5"] ||

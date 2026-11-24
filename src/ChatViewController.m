@@ -228,6 +228,7 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (assign, nonatomic) NSInteger streamRetryCount;
 @property (assign, nonatomic) BOOL didRecoverModel404;
 @property (assign, nonatomic) BOOL didFallbackFromFastMode;
+@property (assign, nonatomic) BOOL didRetryGoogleAuth;   // one automatic retry with a fresh Google token after a 401/403
 @property (strong, nonatomic) NSMutableString *streamBuffer;
 @property (strong, nonatomic) NSMutableString *pendingJSDelta;
 @property (strong, nonatomic) dispatch_source_t deltaFlushTimer;
@@ -2989,6 +2990,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     self.streamRetryCount = 0;
     self.didRecoverModel404 = NO;
     self.didFallbackFromFastMode = NO;
+    self.didRetryGoogleAuth = NO;
     self.streaming = YES;
     [self updateSendButton];
     [self startDeltaFlushTimer];
@@ -3016,6 +3018,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     for (NSString *signal in codingSignals) {
         if ([lowerQuery containsString:signal]) { codingTask = YES; break; }
     }
+    selectedPrompt = [selectedPrompt stringByAppendingString:[self currentDateDirective]];
     NSString *responseDirective = @"\n\n[RESPONSE COMPLETENESS] Unless the user explicitly asks for a short answer, answer every part with enough useful detail to act on it. Do not substitute a long outline for the requested explanation, implementation, or deliverable. Include relevant steps, examples, assumptions, and limitations without filler. For technical topics, identify the actual cause before proposing a change; distinguish verified facts from hypotheses. Never claim a search, API action, file edit, or build succeeded unless it actually did.";
     selectedPrompt = [selectedPrompt stringByAppendingString:responseDirective];
     if (codingTask) {
@@ -3026,6 +3029,76 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         selectedPrompt = [selectedPrompt stringByAppendingString:@"\n\n[WEB SEARCH ENABLED] A real provider-managed web search tool is attached to this request. When the user explicitly asks to search, or the answer depends on current, recent, external, or verifiable information, you MUST invoke the search tool before answering and base factual claims on the returned results. Do not claim to have searched unless the API actually returned results. If the selected model/provider rejects or does not support the tool, state that limitation plainly instead of pretending the search happened." ];
     }
     return selectedPrompt;
+}
+
+// Without this the model only knows the year its training ended in and answers "2024" in 2026.
+- (NSString *)currentDateDirective {
+    NSDate *now = [NSDate date];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.timeZone = [NSTimeZone localTimeZone];
+    formatter.dateFormat = @"EEEE, d MMMM yyyy";
+    NSInteger year = [[NSCalendar currentCalendar] component:NSCalendarUnitYear fromDate:now];
+    NSInteger offsetMinutes = [[NSTimeZone localTimeZone] secondsFromGMT] / 60;
+    NSString *zone = [NSString stringWithFormat:@"UTC%@%02ld:%02ld", offsetMinutes < 0 ? @"-" : @"+",
+                      (long)labs(offsetMinutes) / 60, (long)labs(offsetMinutes) % 60];
+    return [NSString stringWithFormat:@"\n\n[CURRENT DATE] Today is %@ (device time zone %@). The current year is %ld. Your training data ends before this date, so never assume it is an earlier year, and for anything that can change over time (news, prices, versions, who holds an office, schedules, results) rely on the web search tool when it is available instead of on memory.",
+            [formatter stringFromDate:now], zone, (long)year];
+}
+
+// Matches the thinking effort to the question: a one-line factual question does not need half a minute of reasoning,
+// while a long or technical one gets the full effort (and the longest reasoning summary). Returns AIReasoningLevel + 1.
+- (NSInteger)adaptiveReasoningValue {
+    AIReasoningLevel setting = [AppSettings reasoningLevel];
+    NSArray *messages = self.conversation[@"messages"];
+    NSString *query = @"";
+    NSUInteger attachmentCount = 0;
+    NSUInteger previousAnswerChars = 0;
+    for (NSInteger i = (NSInteger)messages.count - 1; i >= 0; i--) {
+        NSDictionary *message = messages[(NSUInteger)i];
+        if (query.length == 0 && [message[@"role"] isEqualToString:@"user"] && [message[@"text"] isKindOfClass:[NSString class]]) {
+            query = message[@"text"];
+            NSArray *atts = message[@"attachments"];
+            if ([atts isKindOfClass:[NSArray class]]) attachmentCount = atts.count;
+        } else if (query.length > 0 && [message[@"role"] isEqualToString:@"assistant"] && [message[@"text"] isKindOfClass:[NSString class]]) {
+            previousAnswerChars = [message[@"text"] length];
+            break;
+        }
+    }
+    NSString *lower = query.lowercaseString ?: @"";
+    NSUInteger length = query.length;
+    NSInteger score = 0;
+    if (length > 120) score += 1;
+    if (length > 400) score += 1;
+    if (length > 1500) score += 1;
+    if (attachmentCount > 0) score += 1;
+    if ([lower containsString:@"```"] || [[query componentsSeparatedByString:@"\n"] count] > 6) score += 1;
+    NSUInteger questionMarks = [[query componentsSeparatedByString:@"?"] count] - 1;
+    if (questionMarks >= 3) score += 1;
+    NSArray *hardSignals = @[@"so sánh", @"phân tích", @"tại sao", @"vì sao", @"giải thích", @"thiết kế", @"kiến trúc", @"tối ưu",
+                             @"debug", @"lỗi", @"sửa", @"viết code", @"code", @"thuật toán", @"chứng minh", @"giải bài",
+                             @"phương trình", @"kế hoạch", @"chiến lược", @"đánh giá", @"ưu nhược", @"từng bước",
+                             @"compare", @"analy", @"why ", @"explain", @"design", @"optimi", @"prove", @"algorithm",
+                             @"architecture", @"step by step", @"implement", @"refactor"];
+    NSInteger hits = 0;
+    for (NSString *signal in hardSignals) { if ([lower containsString:signal]) hits++; }
+    score += MIN(hits, 3);
+
+    AIReasoningLevel level = setting;
+    if (score >= 6) {
+        if (level < AIReasoningLevelVeryHigh) level = AIReasoningLevelVeryHigh;
+    } else if (score >= 4) {
+        if (level < AIReasoningLevelHigh) level = AIReasoningLevelHigh;
+    } else if (score <= 1 && length < 100) {
+        // a short, simple message: do not spend half a minute thinking about it
+        AIReasoningLevel cap = (previousAnswerChars > 800 || attachmentCount > 0) ? AIReasoningLevelMedium : AIReasoningLevelLow;
+        if (score == 0 && level > cap) level = cap;
+        else if (score == 1 && level > AIReasoningLevelMedium) level = AIReasoningLevelMedium;
+    } else if (score <= 1) {
+        if (level > AIReasoningLevelMedium) level = AIReasoningLevelMedium;
+    }
+    [DiagnosticLog log:@"reasoning: setting=%ld used=%ld score=%ld len=%lu", (long)setting, (long)level, (long)score, (unsigned long)length];
+    return (NSInteger)level + 1;
 }
 
 - (NSString *)summaryOfTurns:(NSArray *)turns {
@@ -3070,6 +3143,7 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         [(id)stream setValue:@(fastEnabled) forKey:@"useFastSpeed"];
     }
     stream.useStreaming = useStreaming;
+    stream.adaptiveReasoning = [self adaptiveReasoningValue];
     self.stream = stream;
     if (!self.streamGeneratedAttachments) self.streamGeneratedAttachments = [NSMutableArray array];
     self.requestStartTime = CFAbsoluteTimeGetCurrent();
@@ -3181,6 +3255,21 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
          [lowerDetail containsString:@"billing"] || [lowerDetail containsString:@"spend limit"] ||
          [lowerDetail containsString:@"spend cap"] || [lowerDetail containsString:@"usage limit"] ||
          [lowerDetail containsString:@"payment"] || [lowerDetail containsString:@"quota_exceeded"]);
+
+    // Google sign-in: a 401/403 can just mean the access token went stale. Get a fresh one and try once more.
+    BOOL googleAuthRetry = (currentProvider == AIProviderGemini) && [KeyStore geminiUsesGoogleAccount] &&
+                           (status == 401 || status == 403) && partial.length == 0 &&
+                           self.streamGeneratedAttachments.count == 0 && !self.didRetryGoogleAuth;
+    if (googleAuthRetry) {
+        self.didRetryGoogleAuth = YES;
+        self.stream = nil;
+        [GoogleAuth discardAccessToken];
+        [DiagnosticLog log:@"HTTP %ld with Google sign-in: retrying once with a fresh access token", (long)status];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
+        });
+        return;
+    }
 
     BOOL wasFastRequest = self.stream && [AppSettings fastModeEnabled] && !self.didFallbackFromFastMode;
     NSString *fastErrorText = lowerDetail;

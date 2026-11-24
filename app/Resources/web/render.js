@@ -6,6 +6,14 @@
 
   var copyLabel = 'Copy';
   var CACHE_LIMIT = 1200;
+  // While a reply streams in, the whole text is re-rendered many times. A code block that is still growing is shown
+  // without highlighting and is not cached (every intermediate version would otherwise be kept and highlighted again:
+  // work and memory grow with the square of the reply, the page stutters and iOS can kill it). The final render, when
+  // the reply ends, highlights everything.
+  var STREAM_PLAIN_CHARS = 2500;
+  var CACHE_CHAR_LIMIT = 3000000;
+  var streamingMode = false;
+  var hlChars = 0;
   var hlCache = {}, hlCount = 0;
   var mathCache = {}, mathCount = 0;
 
@@ -19,8 +27,9 @@
 
   function putCache(cacheObj, counterName, key, val) {
     if (counterName === 'hl') {
-      if (hlCount >= CACHE_LIMIT) { hlCache = {}; hlCount = 0; }
+      if (hlCount >= CACHE_LIMIT || hlChars > CACHE_CHAR_LIMIT) { hlCache = {}; hlCount = 0; hlChars = 0; cacheObj = hlCache; }
       if (cacheObj[key] === undefined) { hlCount++; }
+      hlChars += key.length + String(val).length;
       cacheObj[key] = val;
     } else {
       if (mathCount >= CACHE_LIMIT) { mathCache = {}; mathCount = 0; }
@@ -34,6 +43,7 @@
   // ---------------------------------------------------------------------------------------------
 
   function highlight(code, lang) {
+    if (streamingMode && String(code).length > STREAM_PLAIN_CHARS) { return escapeHtml(code); }
     var key = 'k' + lang + '\u0000' + code;
     if (hlCache[key] !== undefined) { return hlCache[key]; }
     var html;
@@ -225,6 +235,7 @@
   window.MD = {
     render: render,
     setCopyLabel: function (label) { copyLabel = label; },
+    setStreaming: function (on) { streamingMode = !!on; },
     ready: !!md
   };
 })();

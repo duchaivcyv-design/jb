@@ -31,6 +31,8 @@ static NSString *const kStreamEndedEarlyMarker  = @"__STREAM_ENDED_EARLY__";    
 
 // YES (default): live stream (Server-Sent Events). NO: one normal request/response, delivered as a single delta.
 @property (assign, nonatomic) BOOL useStreaming;
+// 0 = use the reasoning setting; otherwise AIReasoningLevel + 1. The chat raises or lowers the effort to match the question.
+@property (assign, nonatomic) NSInteger adaptiveReasoning;
 @property (assign, nonatomic) NSTimeInterval retryAfterSeconds; // HTTP Retry-After, when supplied by the provider
 
 @property (copy, nonatomic) void (^onDelta)(NSString *text);

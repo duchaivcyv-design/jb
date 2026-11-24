@@ -40,6 +40,8 @@ typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
 
 // Forgets the session on this device (and asks Google to revoke the refresh token, best effort).
 + (void)signOut;
+// Drops the cached access token so the next request fetches a new one (used when Google answers 401/403).
++ (void)discardAccessToken;
 
 // A valid access token, refreshed when needed. Completion runs on the main queue; error is non-nil when token is nil.
 + (void)accessTokenWithCompletion:(void (^)(NSString *token, NSError *error))completion;

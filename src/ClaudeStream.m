@@ -114,7 +114,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
                           ([lowerModel containsString:@"claude-opus-5-"] && ![lowerModel containsString:@"claude-opus-5-5"]);
     BOOL needsFastBeta = isOpus5Preview || [lowerModel containsString:@"claude-opus-4-8"];
     if (self.useFastSpeed && supportsFast) payload[@"speed"] = @"fast";
-    AIReasoningLevel level = [AppSettings reasoningLevel];
+    AIReasoningLevel level = self.adaptiveReasoning > 0 ? (AIReasoningLevel)(self.adaptiveReasoning - 1) : [AppSettings reasoningLevel];
     BOOL adaptiveThinking = ([lowerModel containsString:@"-4-6"] || [lowerModel containsString:@"-4-7"] ||
                              [lowerModel containsString:@"-4-8"] || [lowerModel containsString:@"-5-"] ||
                              [lowerModel containsString:@"-6-"]);
