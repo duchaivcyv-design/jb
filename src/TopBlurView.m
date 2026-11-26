@@ -66,15 +66,17 @@ static UIBlurEffect *CurrentBlur(void) {
             [_glassTintView.trailingAnchor constraintEqualToAnchor:_blurView.contentView.trailingAnchor],
         ]];
 
-        // 3. Gradient Mask mờ dần từ trên xuống, không có đường kẻ ngang
+        // 3. Gradient Mask gắn lên self.layer để cả blur lẫn tint mờ dần đồng nhất từ trên xuống
         _fadeMaskLayer = [CAGradientLayer layer];
+        _fadeMaskLayer.startPoint = CGPointMake(0.5, 0.0);
+        _fadeMaskLayer.endPoint   = CGPointMake(0.5, 1.0);
         _fadeMaskLayer.colors = @[
             (id)[UIColor blackColor].CGColor,
             (id)[UIColor blackColor].CGColor,
             (id)[UIColor clearColor].CGColor
         ];
         _fadeMaskLayer.locations = @[@0.0, @0.50, @1.0];
-        _blurView.layer.mask = _fadeMaskLayer;
+        self.layer.mask = _fadeMaskLayer;
 
         TopBlurStripTint(_blurView);
         [self applyGlassAppearance];
@@ -93,9 +95,8 @@ static UIBlurEffect *CurrentBlur(void) {
     _blurView.contentScaleFactor = [UIScreen mainScreen].scale;
 
     _glassTintView.backgroundColor = isDark
-     ? [UIColor colorWithWhite:0.0 alpha:0.30]
-     : [UIColor colorWithWhite:1.0 alpha:0.15];
-
+        ? [UIColor colorWithWhite:0.0 alpha:0.30]
+        : [UIColor colorWithWhite:1.0 alpha:0.15];
 }
 
 - (void)dealloc {
@@ -104,8 +105,8 @@ static UIBlurEffect *CurrentBlur(void) {
 
 - (void)rebuild {
     self.darkBuilt = [Theme darkMode];
-    self.blurView.effect = CurrentBlur();
     TopBlurStripTint(self.blurView);
+    [self applyGlassAppearance];
     [self setNeedsLayout];
 }
 
