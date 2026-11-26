@@ -16,9 +16,16 @@ void TopBlurStripTint(UIVisualEffectView *view) {
 // Sử dụng System Material để có độ "sâu" và "bóng" giống kính của iOS 26
 static UIBlurEffect *CurrentBlur(void) {
     if ([Theme darkMode]) {
-        return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]; // hoặc SystemChromeMaterialDark
+        if (@available(iOS 13.0, *)) {
+            return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
+        }
+        return [UIBlurEffect effectWithStyle:UIBlurEffectStyleDark];
+    } else {
+        if (@available(iOS 13.0, *)) {
+            return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialLight];
+        }
+        return [UIBlurEffect effectWithStyle:UIBlurEffectStyleLight];
     }
-    return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialLight];
 }
 
 #pragma mark - Progressive Blur
@@ -66,7 +73,7 @@ static UIBlurEffect *CurrentBlur(void) {
             (id)[UIColor blackColor].CGColor,
             (id)[UIColor clearColor].CGColor
         ];
-        _fadeMaskLayer.locations = @[@0.0, @0.45, @1.0];
+        _fadeMaskLayer.locations = @[@0.0, @0.50, @1.0];
         _blurView.layer.mask = _fadeMaskLayer;
 
         TopBlurStripTint(_blurView);
@@ -86,8 +93,9 @@ static UIBlurEffect *CurrentBlur(void) {
     _blurView.contentScaleFactor = [UIScreen mainScreen].scale;
 
     _glassTintView.backgroundColor = isDark
-        ? [UIColor colorWithWhite:0.0 alpha:0.22]
-        : [UIColor colorWithWhite:1.0 alpha:0.12];
+     ? [UIColor colorWithWhite:0.0 alpha:0.30]
+     : [UIColor colorWithWhite:1.0 alpha:0.15];
+
 }
 
 - (void)dealloc {
