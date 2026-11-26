@@ -2,9 +2,7 @@
 #import "Theme.h"
 #import "Strings.h"
 
-// A blur view normally paints a colour wash (the "tint" of the style) over the blurred picture. Only the blur is wanted, so
-// the wash layers are switched off; the layer that really samples and blurs what is behind (the backdrop) and the content
-// view stay. Called again after anything that may rebuild the layers.
+// Xóa lớp tint (màu xám/trắng mặc định của Apple) để chỉ giữ lại độ mờ của kính
 void TopBlurStripTint(UIVisualEffectView *view) {
     for (UIView *sub in view.subviews) {
         if (sub == view.contentView) continue;
@@ -15,37 +13,16 @@ void TopBlurStripTint(UIVisualEffectView *view) {
     }
 }
 
+// iOS 26 style: Sử dụng System Materials để có độ sâu và "chất" kính giống Apple
 static UIBlurEffect *CurrentBlur(void) {
-    return [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleDark : UIBlurEffectStyleLight];
+    return [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleSystemThinMaterialDark : UIBlurEffectStyleSystemThinMaterialLight];
 }
 
-#pragma mark - Progressive blur
-
-// A real blur whose strength changes with the height: the bar is cut into thin strips, every strip is a live
-// UIVisualEffectView, and the strength of its blur is set with a paused UIViewPropertyAnimator (fractionComplete 1 = the
-// full blur of the style, 0 = none). The strongest strip is at the top edge and the strength goes down strip by strip.
-// (No colour gradient and no mask: a mask over a blur view makes the blur disappear and leaves only a tint.)
-static const NSInteger kStrips = 6;   // few strips: every strip is a live blur of what scrolls behind it, 28 of them made the app crawl
-
-// The strength profile of the web design (PucBloxWeb "pbs"): five blurs of 4, 10, 20, 40 and 80 px, each solid down to a
-// depth and fading out by a deeper one; the blurs add up (as variances), so the strongest sits at the top edge and the
-// weakest one reaches the bottom. Returns 0...1 for a position 0 (top) ... 1 (bottom).
-static CGFloat BlurStrengthAt(CGFloat p) {
-    static const CGFloat r[5]  = {4, 10, 20, 40, 80};
-    static const CGFloat m1[5] = {0.62, 0.52, 0.42, 0.32, 0.24};
-    static const CGFloat m2[5] = {1.00, 0.86, 0.72, 0.58, 0.44};
-    CGFloat sum = 0, top = 0;
-    for (int k = 0; k < 5; k++) {
-        CGFloat a = p <= m1[k] ? 1 : (p >= m2[k] ? 0 : (m2[k] - p) / (m2[k] - m1[k]));
-        sum += r[k] * a * r[k] * a;
-        top += r[k] * r[k];
-    }
-    return pow(sqrt(sum) / sqrt(top), 0.55);   // blur radius does not grow linearly with the animator fraction
-}
+#pragma mark - Progressive Blur
 
 @interface TopBlurView ()
-@property (strong, nonatomic) NSMutableArray<UIVisualEffectView *> *strips;
-@property (strong, nonatomic) NSMutableArray<UIViewPropertyAnimator *> *animators;
+@property (strong, nonatomic) UIVisualEffectView *blurView;
+@property (strong, nonatomic) CAGradientLayer *fadeMaskLayer;
 @property (assign, nonatomic) BOOL darkBuilt;
 @end
 
@@ -57,9 +34,25 @@ static CGFloat BlurStrengthAt(CGFloat p) {
         self.userInteractionEnabled = NO;
         self.backgroundColor = [UIColor clearColor];
         self.clipsToBounds = YES;
-        _strips = [NSMutableArray array];
-        _animators = [NSMutableArray array];
-        // The blur of a view is reset by the system when the app comes back from the background: build it again.
+        
+        // 1. Tạo 1 lớp Blur duy nhất thay vì 6 dải
+        _blurView = [[UIVisualEffectView alloc] initWithEffect:CurrentBlur()];
+        _blurView.userInteractionEnabled = NO;
+        _blurView.contentScaleFactor = [UIScreen mainScreen].scale; // Fix lỗi pixel/răng cưa
+        [self addSubview:_blurView];
+        
+        // 2. Tạo Gradient Mask để làm mờ dần (Progressive Fade)
+        _fadeMaskLayer = [CAGradientLayer layer];
+        // Màu đen = hiện blur, Màu trong suốt = mất blur
+        _fadeMaskLayer.colors = @[
+            (id)[UIColor blackColor].CGColor,
+            (id)[UIColor blackColor].CGColor,
+            (id)[UIColor clearColor].CGColor
+        ];
+        // Chỉnh lại locations để blur không bị "dài quá" (Fade bắt đầu từ 60% đến 100%)
+        _fadeMaskLayer.locations = @[@0.0, @0.6, @1.0]; 
+        _blurView.layer.mask = _fadeMaskLayer;
+        
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(rebuild) name:UIApplicationDidBecomeActiveNotification object:nil];
     }
     return self;
@@ -67,35 +60,12 @@ static CGFloat BlurStrengthAt(CGFloat p) {
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [self tearDown];
-}
-
-- (void)tearDown {
-    for (UIViewPropertyAnimator *animator in self.animators) [animator stopAnimation:YES];
-    [self.animators removeAllObjects];
-    for (UIView *strip in self.strips) [strip removeFromSuperview];
-    [self.strips removeAllObjects];
 }
 
 - (void)rebuild {
-    [self tearDown];
-    if (self.bounds.size.height < 2) return;
     self.darkBuilt = [Theme darkMode];
-    UIBlurEffect *blur = CurrentBlur();
-    for (NSInteger i = 0; i < kStrips; i++) {
-        UIVisualEffectView *strip = [[UIVisualEffectView alloc] initWithEffect:nil];
-        [self addSubview:strip];
-        [self.strips addObject:strip];
-        __weak UIVisualEffectView *weakStrip = strip;
-        UIViewPropertyAnimator *animator = [[UIViewPropertyAnimator alloc] initWithDuration:1 curve:UIViewAnimationCurveLinear animations:^{
-            weakStrip.effect = blur;
-        }];
-        animator.pausesOnCompletion = YES;
-        // strength: full at the top edge, then falling off smoothly to almost nothing at the bottom
-        CGFloat x = ((CGFloat)i + 0.5) / kStrips;
-        animator.fractionComplete = MAX(0.0, MIN(1.0, BlurStrengthAt(x)));
-        [self.animators addObject:animator];
-    }
+    self.blurView.effect = CurrentBlur();
+    TopBlurStripTint(self.blurView);
     [self setNeedsLayout];
 }
 
@@ -106,14 +76,19 @@ static CGFloat BlurStrengthAt(CGFloat p) {
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    if (self.strips.count != kStrips || self.darkBuilt != [Theme darkMode]) { [self rebuild]; }
-    CGFloat height = self.bounds.size.height, width = self.bounds.size.width;
-    CGFloat step = height / kStrips;
-    for (NSInteger i = 0; i < (NSInteger)self.strips.count; i++) {
-        // each strip reaches a little into the next one so that no seam shows
-        self.strips[i].frame = CGRectMake(0, floor(i * step), width, ceil(step) + 1);
-        TopBlurStripTint(self.strips[i]);
-    }
+    
+    if (self.darkBuilt != [Theme darkMode]) { [self rebuild]; }
+    
+    // Fix lỗi "không ngang mũi tên": Ép chiều cao của blur khớp với view
+    self.blurView.frame = self.bounds;
+    
+    // Tắt animation của mask để tránh bị giật khi scroll
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    self.fadeMaskLayer.frame = self.bounds;
+    [CATransaction commit];
+    
+    TopBlurStripTint(self.blurView);
 }
 
 - (void)refreshStyle { [self rebuild]; }
@@ -145,7 +120,8 @@ static CGFloat BlurStrengthAt(CGFloat p) {
         _glass = [[UIVisualEffectView alloc] initWithEffect:CurrentBlur()];
         _glass.userInteractionEnabled = NO;
         _glass.clipsToBounds = YES;
-        self.layer.shadowColor = [UIColor blackColor].CGColor;   // soft drop shadow like the web buttons
+        _glass.contentScaleFactor = [UIScreen mainScreen].scale;
+        self.layer.shadowColor = [UIColor blackColor].CGColor;
         self.layer.shadowOpacity = 0.14;
         self.layer.shadowRadius = 5;
         self.layer.shadowOffset = CGSizeMake(0, 2);
@@ -183,7 +159,7 @@ static CGFloat BlurStrengthAt(CGFloat p) {
 - (void)refresh {
     BOOL dark = [Theme darkMode];
     self.glass.effect = CurrentBlur();
-    self.tint.backgroundColor = [UIColor clearColor];   // no colour over the glass: only the blur
+    self.tint.backgroundColor = [UIColor clearColor];
     TopBlurStripTint(self.glass);
     self.layer.borderColor = (dark ? [UIColor colorWithWhite:1 alpha:0.20] : [UIColor colorWithWhite:0 alpha:0.10]).CGColor;
     self.layer.shadowOpacity = dark ? 0.30 : 0.14;
