@@ -2,7 +2,7 @@
 #import "Theme.h"
 #import "Strings.h"
 
-// Xóa lớp tint (màu xám/trắng mặc định của Apple) để chỉ giữ lại độ mờ của kính
+// Tắt lớp màu (tint) mặc định của Apple để chỉ giữ lại độ mờ của kính
 void TopBlurStripTint(UIVisualEffectView *view) {
     for (UIView *sub in view.subviews) {
         if (sub == view.contentView) continue;
@@ -13,7 +13,7 @@ void TopBlurStripTint(UIVisualEffectView *view) {
     }
 }
 
-// iOS 26 style: Sử dụng System Materials để có độ sâu và "chất" kính giống Apple
+// Sử dụng System Material để có độ "sâu" và "bóng" giống kính của iOS 26
 static UIBlurEffect *CurrentBlur(void) {
     return [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleSystemThinMaterialDark : UIBlurEffectStyleSystemThinMaterialLight];
 }
@@ -35,22 +35,23 @@ static UIBlurEffect *CurrentBlur(void) {
         self.backgroundColor = [UIColor clearColor];
         self.clipsToBounds = YES;
         
-        // 1. Tạo 1 lớp Blur duy nhất thay vì 6 dải
+        // 1. Dùng 1 lớp Blur duy nhất để triệt tiêu lỗi "tách từng tầng" và "lỗi pixel"
         _blurView = [[UIVisualEffectView alloc] initWithEffect:CurrentBlur()];
         _blurView.userInteractionEnabled = NO;
-        _blurView.contentScaleFactor = [UIScreen mainScreen].scale; // Fix lỗi pixel/răng cưa
+        _blurView.contentScaleFactor = [UIScreen mainScreen].scale; // Fix răng cưa/pixel
         [self addSubview:_blurView];
         
-        // 2. Tạo Gradient Mask để làm mờ dần (Progressive Fade)
+        // 2. Dùng Gradient Mask để làm mờ dần (Progressive Fade)
         _fadeMaskLayer = [CAGradientLayer layer];
-        // Màu đen = hiện blur, Màu trong suốt = mất blur
         _fadeMaskLayer.colors = @[
-            (id)[UIColor blackColor].CGColor,
-            (id)[UIColor blackColor].CGColor,
-            (id)[UIColor clearColor].CGColor
+            (id)[UIColor blackColor].CGColor,    // Trên cùng: Đặc (Hiện blur)
+            (id)[UIColor blackColor].CGColor,    
+            (id)[UIColor clearColor].CGColor     // Dưới cùng: Trong suốt (Mất blur)
         ];
-        // Chỉnh lại locations để blur không bị "dài quá" (Fade bắt đầu từ 60% đến 100%)
-        _fadeMaskLayer.locations = @[@0.0, @0.6, @1.0]; 
+        // FIX LỖI "DÀI QUÁ KHÔNG NGANG MŨI TÊN":
+        // 0.0 -> 0.55 là giữ nguyên độ mờ. Từ 0.55 -> 1.0 là bắt đầu mờ dần.
+        // Mày có thể tăng 0.55 lên 0.65 nếu muốn vùng blur ngắn lại nữa.
+        _fadeMaskLayer.locations = @[@0.0, @0.55, @1.0]; 
         _blurView.layer.mask = _fadeMaskLayer;
         
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(rebuild) name:UIApplicationDidBecomeActiveNotification object:nil];
@@ -79,10 +80,10 @@ static UIBlurEffect *CurrentBlur(void) {
     
     if (self.darkBuilt != [Theme darkMode]) { [self rebuild]; }
     
-    // Fix lỗi "không ngang mũi tên": Ép chiều cao của blur khớp với view
+    // Ép lớp blur phủ kín toàn bộ view
     self.blurView.frame = self.bounds;
     
-    // Tắt animation của mask để tránh bị giật khi scroll
+    // Tắt animation ngầm của lớp Mask để khi vuốt (scroll) không bị giật lag
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     self.fadeMaskLayer.frame = self.bounds;
@@ -121,21 +122,27 @@ static UIBlurEffect *CurrentBlur(void) {
         _glass.userInteractionEnabled = NO;
         _glass.clipsToBounds = YES;
         _glass.contentScaleFactor = [UIScreen mainScreen].scale;
+        
         self.layer.shadowColor = [UIColor blackColor].CGColor;
         self.layer.shadowOpacity = 0.14;
         self.layer.shadowRadius = 5;
         self.layer.shadowOffset = CGSizeMake(0, 2);
         [self addSubview:_glass];
+        
         _tint = [[UIView alloc] init];
         _tint.userInteractionEnabled = NO;
         [_glass.contentView addSubview:_tint];
+        
         _iconView = [[UIImageView alloc] init];
         _iconView.contentMode = UIViewContentModeCenter;
         _iconView.userInteractionEnabled = NO;
         [self addSubview:_iconView];
+        
         self.layer.borderWidth = 1;
+        
         [self addTarget:self action:@selector(down) forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
         [self addTarget:self action:@selector(up) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel | UIControlEventTouchDragExit];
+        
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refresh) name:kNotifThemeChanged object:nil];
         [self refresh];
     }
@@ -161,6 +168,8 @@ static UIBlurEffect *CurrentBlur(void) {
     self.glass.effect = CurrentBlur();
     self.tint.backgroundColor = [UIColor clearColor];
     TopBlurStripTint(self.glass);
+    
+    // Viền sáng (highlight) giống iOS 26
     self.layer.borderColor = (dark ? [UIColor colorWithWhite:1 alpha:0.20] : [UIColor colorWithWhite:0 alpha:0.10]).CGColor;
     self.layer.shadowOpacity = dark ? 0.30 : 0.14;
     self.iconView.tintColor = [Theme accent];
