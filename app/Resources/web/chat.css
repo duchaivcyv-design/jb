@@ -28,13 +28,10 @@ body {
 #messages {
   max-width: 760px;
   margin: 0 auto;
-  padding: calc(20px * var(--uiscale) + var(--top, 0px)) calc(16px * var(--uiscale)) calc(36px * var(--uiscale)) calc(16px * var(--uiscale));   /* --top: room under the see-through bar (set by the app) */
+  /* ĐÃ SỬA: Đổi 20px thành 60px để hạ tin nhắn xuống thấp, tránh bị thanh bar che */
+  padding: calc(60px * var(--uiscale) + var(--top, 0px)) calc(16px * var(--uiscale)) calc(36px * var(--uiscale)) calc(16px * var(--uiscale));   
   overflow-y: visible;
   touch-action: pan-y;
-}
-.row {
-  position: relative;
-  margin-bottom: calc(22px * var(--uiscale));
 }
 
 /* user message: soft beige bubble on the right */
@@ -228,8 +225,8 @@ body {
 /* empty state */
 .empty {
   position: fixed;
-  /* ÉP CỨNG XUỐNG 150PX VÀ THÊM !IMPORTANT ĐỂ ĐÈ MỌI THỨ */
-  top: 150px !important; 
+  /* Tự động canh sát mép dưới thanh đen (biến --top) cộng thêm 10px cho thoáng */
+  top: calc(var(--top, 0px) + 10px) !important; 
   left: 0;
   right: 0;
   margin: 0 auto;
