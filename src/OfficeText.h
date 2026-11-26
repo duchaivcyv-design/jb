@@ -2,11 +2,16 @@
 #define OFFICE_TEXT_H
 
 #include <stddef.h>
+#include "cmcore.h"
 
-// Plain-C text extraction for Word (.docx) and PowerPoint (.pptx) files.
-// Both formats are ZIP archives of XML; Gemini cannot read them directly, so the app pulls the text out locally.
+// Text extraction for Word (.docx), PowerPoint (.pptx) and source/text ZIP files. The code lives in the Rust core
+// (rust/cmcore/src/office_text.rs); the functions are declared in cmcore.h:
 //
-// Return a malloc'd, NUL-terminated UTF-8 string (caller frees), or NULL on failure with *err set:
+//   char *office_docx_text(const unsigned char *zip, size_t zipLen, int *err);
+//   char *office_pptx_text(const unsigned char *zip, size_t zipLen, int *err);
+//   char *office_zip_text(const unsigned char *zip, size_t zipLen, int *err);
+//
+// They return a malloc'd, NUL-terminated UTF-8 string (caller frees), or NULL on failure with *err set:
 enum {
     OFFICE_OK = 0,
     OFFICE_ERR_NOT_ZIP = 1,       // not a ZIP / corrupt archive
@@ -15,9 +20,5 @@ enum {
     OFFICE_ERR_TOO_LARGE = 4,     // would expand past the safety limit
     OFFICE_ERR_NO_MEMORY = 5
 };
-
-char *office_docx_text(const unsigned char *zip, size_t zipLen, int *err);
-char *office_pptx_text(const unsigned char *zip, size_t zipLen, int *err);
-char *office_zip_text(const unsigned char *zip, size_t zipLen, int *err);
 
 #endif

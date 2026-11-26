@@ -3,6 +3,7 @@
 #import "Strings.h"
 #import "AppSettings.h"
 #import "Material.h"
+#import "TopBlurView.h"
 
 // Material 3 "shared axis" (X) transition between two screens: the new screen slides in 30 pt along the axis while it
 // fades in (emphasized decelerate, 400 ms); the old one slides out 30 pt the other way while it fades out faster
@@ -54,6 +55,7 @@
 @interface MiniNavigationController ()
 @property (assign, nonatomic) BOOL transitioning;
 @property (copy, nonatomic) NSString *barSignature;
+@property (strong, nonatomic) TopBlurView *topBlur;
 @end
 
 @implementation MiniNavigationController
@@ -62,6 +64,39 @@
     [super viewDidLoad];
     self.delegate = self;
     self.interactivePopGestureRecognizer.delegate = self;
+    self.topBlur = [[TopBlurView alloc] init];
+    [self.view insertSubview:self.topBlur belowSubview:self.navigationBar];
+    for (UIViewController *root in self.viewControllers) [self applyBarLayoutForController:root];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(topBlurStyleChanged) name:kNotifThemeChanged object:nil];
+}
+
+- (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+
+- (void)topBlurStyleChanged { [self.topBlur refreshStyle]; }
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    // The blur covers the status bar and the bar, and goes on for a little more so that it can fade out below the buttons.
+    CGFloat barBottom = CGRectGetMaxY(self.navigationBar.frame);
+    self.topBlur.hidden = self.navigationBarHidden;
+    self.topBlur.frame = CGRectMake(0, 0, self.view.bounds.size.width, barBottom + 48);
+    [self.view insertSubview:self.topBlur belowSubview:self.navigationBar];
+}
+
+// The screens that scroll (tables, lists, the chat page) run under the see-through bar; the others keep their own layout
+// from the bottom of the bar.
+- (void)applyBarLayoutForController:(UIViewController *)controller {
+    static NSSet *under;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        under = [NSSet setWithArray:@[@"ChatViewController", @"HistoryViewController", @"SettingsViewController", @"GoogleAccountViewController",
+                                      @"AppearanceViewController", @"SoftwareUpdateViewController", @"ModelPickerViewController", @"AccentColorViewController"]];
+    });
+    if ([under containsObject:NSStringFromClass([controller class])]) {
+        controller.edgesForExtendedLayout = UIRectEdgeAll;
+    } else {
+        controller.edgesForExtendedLayout = UIRectEdgeLeft | UIRectEdgeRight | UIRectEdgeBottom;
+    }
 }
 
 #pragma mark - Back button
@@ -80,6 +115,7 @@
 
 - (void)navigationController:(UINavigationController *)navigationController willShowViewController:(UIViewController *)viewController animated:(BOOL)animated {
     self.transitioning = YES;
+    [self applyBarLayoutForController:viewController];
     // Screens above the first one get the plain back button unless they bring their own left item (the history list does).
     if (navigationController.viewControllers.count > 1 && viewController.navigationItem.leftBarButtonItem == nil && !viewController.navigationItem.hidesBackButton) {
         viewController.navigationItem.leftBarButtonItem = [self makeBackItem];

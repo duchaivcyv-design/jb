@@ -26,6 +26,7 @@ static void RingColors(UIColor **outer, UIColor **inner) {
 @property (strong, nonatomic) CAShapeLayer *outer;
 @property (strong, nonatomic) CAShapeLayer *inner;
 @property (strong, nonatomic) UIImageView *logo;
+@property (strong, nonatomic) UIImageView *photo;
 @end
 
 @implementation GoogleRingView
@@ -45,6 +46,11 @@ static void RingColors(UIColor **outer, UIColor **inner) {
         _logo = [[UIImageView alloc] initWithImage:[Theme claudeMarkImage]];
         _logo.contentMode = UIViewContentModeScaleAspectFit;
         [self addSubview:_logo];
+        _photo = [[UIImageView alloc] init];
+        _photo.contentMode = UIViewContentModeScaleAspectFill;
+        _photo.clipsToBounds = YES;
+        _photo.hidden = YES;
+        [self addSubview:_photo];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(startSpinning) name:UIApplicationDidBecomeActiveNotification object:nil];
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshLogo) name:kNotifThemeChanged object:nil];
         [self applyRingColors];
@@ -53,6 +59,16 @@ static void RingColors(UIColor **outer, UIColor **inner) {
 }
 
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
+
+// The profile picture replaces the mark (round, inside the rings); nil brings the mark back.
+- (void)setAvatar:(UIImage *)avatar {
+    if (avatar == _avatar) return;
+    _avatar = avatar;
+    self.photo.image = avatar;
+    self.photo.hidden = (avatar == nil);
+    self.logo.hidden = (avatar != nil);
+    [self setNeedsLayout];
+}
 
 - (void)applyRingColors {
     UIColor *outer = nil, *inner = nil;
@@ -102,6 +118,9 @@ static void RingColors(UIColor **outer, UIColor **inner) {
     [CATransaction commit];
     CGFloat mark = w * 0.40;
     self.logo.frame = CGRectMake((self.bounds.size.width - mark) / 2, (self.bounds.size.height - mark) / 2, mark, mark);
+    CGFloat face = w * 0.60;
+    self.photo.frame = CGRectMake((self.bounds.size.width - face) / 2, (self.bounds.size.height - face) / 2, face, face);
+    self.photo.layer.cornerRadius = face / 2;
 }
 
 - (void)startSpinning {
@@ -155,10 +174,13 @@ static void RingColors(UIColor **outer, UIColor **inner) {
         [self addTarget:self action:@selector(touchDown) forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
         [self addTarget:self action:@selector(touchUp) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel | UIControlEventTouchDragExit];
         self.accessibilityTraits = UIAccessibilityTraitButton;
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refresh) name:kNotifKeyChanged object:nil];
         [self refresh];
     }
     return self;
 }
+
+- (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
 - (void)touchDown {
     if (![Material active] || [Material reduceMotion]) return;
@@ -176,10 +198,14 @@ static void RingColors(UIColor **outer, UIColor **inner) {
     self.detailLabel.textColor = [Theme secondaryText];
     self.chevron.tintColor = [Theme secondaryText];
     if ([GoogleAuth isSignedIn]) {
-        self.titleLabel.text = L(@"google_account_title");
+        NSString *name = [GoogleAuth accountName];
+        self.titleLabel.text = name.length > 0 ? name : L(@"google_account_title");
         NSString *email = [GoogleAuth accountEmail];
         self.detailLabel.text = email.length > 0 ? email : L(@"google_account_signed_in");
+        self.ring.avatar = [GoogleAuth accountAvatar];
+        [GoogleAuth refreshProfileIfNeeded];
     } else {
+        self.ring.avatar = nil;
         self.titleLabel.text = L(@"google_account_title");
         self.detailLabel.text = L(@"google_account_desc");
     }
@@ -208,18 +234,160 @@ static void RingColors(UIColor **outer, UIColor **inner) {
 
 @end
 
+#pragma mark - Rows (grouped cards like the Apple Account page, in Material 3)
+
+typedef NS_ENUM(NSInteger, AccountGlyph) { AccountGlyphKey, AccountGlyphCheck, AccountGlyphSignIn, AccountGlyphSignOut };
+
+// Small line icons drawn in code (SF Symbols do not exist on iOS 12).
+static UIImage *GlyphImage(AccountGlyph glyph) {
+    CGSize size = CGSizeMake(22, 22);
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:size];
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        UIBezierPath *path = [UIBezierPath bezierPath];
+        path.lineWidth = 2;
+        path.lineCapStyle = kCGLineCapRound;
+        path.lineJoinStyle = kCGLineJoinRound;
+        [[UIColor whiteColor] setStroke];
+        switch (glyph) {
+            case AccountGlyphKey:
+                [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(3, 11, 8, 8)]];
+                [path moveToPoint:CGPointMake(9, 12)]; [path addLineToPoint:CGPointMake(19, 3)];
+                [path moveToPoint:CGPointMake(15, 7)]; [path addLineToPoint:CGPointMake(18, 10)];
+                break;
+            case AccountGlyphCheck:
+                [path appendPath:[UIBezierPath bezierPathWithOvalInRect:CGRectMake(2, 2, 18, 18)]];
+                [path moveToPoint:CGPointMake(7, 11.5)]; [path addLineToPoint:CGPointMake(10, 14.5)]; [path addLineToPoint:CGPointMake(15.5, 8)];
+                break;
+            case AccountGlyphSignIn:
+                [path moveToPoint:CGPointMake(3, 11)]; [path addLineToPoint:CGPointMake(14, 11)];
+                [path moveToPoint:CGPointMake(10, 7)]; [path addLineToPoint:CGPointMake(14, 11)]; [path addLineToPoint:CGPointMake(10, 15)];
+                [path moveToPoint:CGPointMake(14, 3)]; [path addLineToPoint:CGPointMake(19, 3)]; [path addLineToPoint:CGPointMake(19, 19)]; [path addLineToPoint:CGPointMake(14, 19)];
+                break;
+            case AccountGlyphSignOut:
+                [path moveToPoint:CGPointMake(9, 3)]; [path addLineToPoint:CGPointMake(3, 3)]; [path addLineToPoint:CGPointMake(3, 19)]; [path addLineToPoint:CGPointMake(9, 19)];
+                [path moveToPoint:CGPointMake(8, 11)]; [path addLineToPoint:CGPointMake(19, 11)];
+                [path moveToPoint:CGPointMake(15, 7)]; [path addLineToPoint:CGPointMake(19, 11)]; [path addLineToPoint:CGPointMake(15, 15)];
+                break;
+        }
+        [path stroke];
+    }];
+    return [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+}
+
+@interface AccountRow : UIControl
+@property (strong, nonatomic) UIView *badge;
+@property (strong, nonatomic) UIImageView *icon;
+@property (strong, nonatomic) UILabel *titleLabel;
+@property (strong, nonatomic) UIImageView *chevron;
+@property (strong, nonatomic) UIView *separator;
+@property (assign, nonatomic) BOOL destructive;
+@property (assign, nonatomic) BOOL busyDimmed;
+@end
+
+@implementation AccountRow
+
+- (instancetype)initWithGlyph:(AccountGlyph)glyph {
+    self = [super initWithFrame:CGRectZero];
+    if (self) {
+        _badge = [[UIView alloc] init];
+        _badge.userInteractionEnabled = NO;
+        _badge.layer.cornerRadius = 8;
+        [self addSubview:_badge];
+        _icon = [[UIImageView alloc] initWithImage:GlyphImage(glyph)];
+        _icon.tintColor = [UIColor whiteColor];
+        [_badge addSubview:_icon];
+        _titleLabel = [[UILabel alloc] init];
+        _titleLabel.font = [UIFont systemFontOfSize:17];
+        _titleLabel.userInteractionEnabled = NO;
+        [self addSubview:_titleLabel];
+        _chevron = [[UIImageView alloc] initWithImage:[Material chevronImageRight]];
+        _chevron.userInteractionEnabled = NO;
+        [self addSubview:_chevron];
+        _separator = [[UIView alloc] init];
+        _separator.userInteractionEnabled = NO;
+        [self addSubview:_separator];
+        self.accessibilityTraits = UIAccessibilityTraitButton;
+        [self addTarget:self action:@selector(down) forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
+        [self addTarget:self action:@selector(up) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel | UIControlEventTouchDragExit];
+    }
+    return self;
+}
+
+- (void)down { self.backgroundColor = [[Theme text] colorWithAlphaComponent:0.07]; }
+- (void)up {
+    if ([Material reduceMotion]) { self.backgroundColor = [UIColor clearColor]; return; }
+    [UIView animateWithDuration:0.25 animations:^{ self.backgroundColor = [UIColor clearColor]; }];
+}
+
+- (void)applyTheme {
+    UIColor *tint = self.destructive ? [Theme error] : [Theme accent];
+    self.badge.backgroundColor = tint;
+    self.icon.tintColor = self.destructive ? [UIColor whiteColor] : [Theme onAccent];
+    self.titleLabel.textColor = self.destructive ? [Theme error] : [Theme text];
+    self.chevron.tintColor = [Theme secondaryText];
+    self.chevron.hidden = self.destructive;
+    self.separator.backgroundColor = [Theme border];
+    self.accessibilityLabel = self.titleLabel.text;
+}
+
+- (void)setEnabled:(BOOL)enabled { [super setEnabled:enabled]; self.alpha = enabled ? 1 : 0.55; }
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+    self.badge.frame = CGRectMake(16, (h - 32) / 2, 32, 32);
+    self.badge.layer.cornerRadius = MIN(MR(8, 16), 16);
+    self.icon.frame = CGRectMake(5, 5, 22, 22);
+    CGFloat x = 16 + 32 + 14;
+    self.chevron.frame = CGRectMake(w - 16 - 14, (h - 20) / 2, 14, 20);
+    self.titleLabel.frame = CGRectMake(x, 0, MAX(40, w - x - 16 - 24), h);
+    CGFloat scale = [UIScreen mainScreen].scale;
+    self.separator.frame = CGRectMake(x, h - 1.0 / scale, w - x, 1.0 / scale);
+}
+
+@end
+
+// A rounded card holding rows (the groups of the Apple Account page).
+@interface AccountGroup : UIView
+@property (strong, nonatomic) NSArray<AccountRow *> *rows;
+@end
+
+@implementation AccountGroup
+- (void)setRows:(NSArray<AccountRow *> *)rows {
+    for (UIView *old in _rows) [old removeFromSuperview];
+    _rows = rows;
+    for (AccountRow *row in rows) [self addSubview:row];
+    self.clipsToBounds = YES;
+    [self setNeedsLayout];
+}
+- (CGFloat)heightForWidth:(CGFloat)w { return 56.0 * self.rows.count; }
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.layer.cornerRadius = MR(12, 28);
+    CGFloat y = 0;
+    for (NSInteger i = 0; i < (NSInteger)self.rows.count; i++) {
+        AccountRow *row = self.rows[i];
+        row.frame = CGRectMake(0, y, self.bounds.size.width, 56);
+        row.separator.hidden = (i == (NSInteger)self.rows.count - 1);
+        y += 56;
+    }
+}
+@end
+
 #pragma mark - Screen
 
-@interface GoogleAccountViewController () <UITextFieldDelegate>
+@interface GoogleAccountViewController ()
 @property (strong, nonatomic) UIScrollView *scrollView;
 @property (strong, nonatomic) GoogleRingView *ring;
 @property (strong, nonatomic) UILabel *nameLabel;
 @property (strong, nonatomic) UILabel *emailLabel;
 @property (strong, nonatomic) UILabel *infoLabel;
-@property (strong, nonatomic) UIButton *signInButton;
-@property (strong, nonatomic) UIButton *checkButton;
-@property (strong, nonatomic) UIButton *signOutButton;
-@property (strong, nonatomic) UIButton *keyButton;
+@property (strong, nonatomic) AccountGroup *groupMain;
+@property (strong, nonatomic) AccountGroup *groupOut;
+@property (strong, nonatomic) AccountRow *signInRow;
+@property (strong, nonatomic) AccountRow *checkRow;
+@property (strong, nonatomic) AccountRow *keyRow;
+@property (strong, nonatomic) AccountRow *signOutRow;
 @property (strong, nonatomic) UILabel *statusLabel;
 @property (assign, nonatomic) BOOL busy;
 @end
@@ -236,7 +404,6 @@ static void RingColors(UIColor **outer, UIColor **inner) {
     self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.scrollView.alwaysBounceVertical = YES;
     [Material installStretchOnScrollView:self.scrollView];   // Material 3 stretch at the ends
-    self.scrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
     [self.view addSubview:self.scrollView];
 
     self.ring = [[GoogleRingView alloc] init];
@@ -261,10 +428,19 @@ static void RingColors(UIColor **outer, UIColor **inner) {
     self.infoLabel.numberOfLines = 0;
     [self.scrollView addSubview:self.infoLabel];
 
-    self.signInButton = [self makeButton:@selector(signInTapped)];
-    self.checkButton = [self makeButton:@selector(checkTapped)];
-    self.signOutButton = [self makeButton:@selector(signOutTapped)];
-    self.keyButton = [self makeButton:@selector(keyTapped)];
+    self.signInRow = [[AccountRow alloc] initWithGlyph:AccountGlyphSignIn];
+    self.checkRow = [[AccountRow alloc] initWithGlyph:AccountGlyphCheck];
+    self.keyRow = [[AccountRow alloc] initWithGlyph:AccountGlyphKey];
+    self.signOutRow = [[AccountRow alloc] initWithGlyph:AccountGlyphSignOut];
+    self.signOutRow.destructive = YES;
+    [self.signInRow addTarget:self action:@selector(signInTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.checkRow addTarget:self action:@selector(checkTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.keyRow addTarget:self action:@selector(keyTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.signOutRow addTarget:self action:@selector(signOutTapped) forControlEvents:UIControlEventTouchUpInside];
+    self.groupMain = [[AccountGroup alloc] init];
+    self.groupOut = [[AccountGroup alloc] init];
+    [self.scrollView addSubview:self.groupMain];
+    [self.scrollView addSubview:self.groupOut];
 
     self.statusLabel = [[UILabel alloc] init];
     self.statusLabel.font = [UIFont systemFontOfSize:15];
@@ -280,59 +456,44 @@ static void RingColors(UIColor **outer, UIColor **inner) {
 
 - (void)dealloc { [[NSNotificationCenter defaultCenter] removeObserver:self]; }
 
-- (UIButton *)makeButton:(SEL)action {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-    button.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
-    button.titleLabel.adjustsFontSizeToFitWidth = YES;
-    button.titleLabel.minimumScaleFactor = 0.8;
-    button.clipsToBounds = YES;
-    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [self.scrollView addSubview:button];
-    return button;
-}
-
 - (void)applyTheme {
     self.view.backgroundColor = [Theme background];
     [Material styleTitleForController:self];
     self.nameLabel.textColor = [Theme text];
     self.emailLabel.textColor = [Theme secondaryText];
     self.infoLabel.textColor = [Theme secondaryText];
-    self.signInButton.backgroundColor = [Theme accent];
-    [self.signInButton setTitleColor:[Theme onAccent] forState:UIControlStateNormal];
-    [self.signInButton setTitleColor:[[Theme onAccent] colorWithAlphaComponent:0.5] forState:UIControlStateDisabled];
-    // tonal buttons (Material 3): a soft fill, text in the accent; sign out is tonal in the error colour
-    UIColor *tonal = [[Theme accent] colorWithAlphaComponent:0.14];
-    for (UIButton *button in @[self.checkButton, self.keyButton]) {
-        button.backgroundColor = tonal;
-        [button setTitleColor:[Theme accent] forState:UIControlStateNormal];
-        [button setTitleColor:[[Theme accent] colorWithAlphaComponent:0.4] forState:UIControlStateDisabled];
-    }
-    self.signOutButton.backgroundColor = [[Theme error] colorWithAlphaComponent:0.14];
-    [self.signOutButton setTitleColor:[Theme error] forState:UIControlStateNormal];
-    [self.signOutButton setTitleColor:[[Theme error] colorWithAlphaComponent:0.4] forState:UIControlStateDisabled];
+    self.groupMain.backgroundColor = [Theme surface];
+    self.groupOut.backgroundColor = [Theme surface];
     [self refresh];
 }
 
 - (void)refresh {
     BOOL signedIn = [GoogleAuth isSignedIn];
-    self.nameLabel.text = L(@"google_account_title");
+    NSString *name = signedIn ? [GoogleAuth accountName] : @"";
     NSString *email = [GoogleAuth accountEmail];
+    self.nameLabel.text = name.length > 0 ? name : L(@"google_account_title");
     if (signedIn) {
         self.emailLabel.text = email.length > 0 ? email : L(@"google_account_signed_in");
         self.infoLabel.text = L(@"google_account_active");
+        self.ring.avatar = [GoogleAuth accountAvatar];
+        [GoogleAuth refreshProfileIfNeeded];
     } else {
         self.emailLabel.text = L(@"google_account_not_signed_in");
         self.infoLabel.text = L(@"google_account_desc");
+        self.ring.avatar = nil;
     }
-    [self.signInButton setTitle:signedIn ? L(@"google_sign_in_again") : L(@"google_sign_in") forState:UIControlStateNormal];
-    [self.checkButton setTitle:L(@"google_check") forState:UIControlStateNormal];
-    [self.signOutButton setTitle:L(@"google_sign_out") forState:UIControlStateNormal];
-    [self.keyButton setTitle:L(@"google_use_key") forState:UIControlStateNormal];
-    self.checkButton.hidden = !signedIn;
-    self.signOutButton.hidden = !signedIn;
-    for (UIButton *button in @[self.signInButton, self.checkButton, self.signOutButton, self.keyButton]) {
-        button.enabled = !self.busy;
-        button.alpha = self.busy ? 0.7 : 1;
+    self.signInRow.titleLabel.text = signedIn ? L(@"google_sign_in_again") : L(@"google_sign_in");
+    self.checkRow.titleLabel.text = L(@"google_check");
+    self.keyRow.titleLabel.text = L(@"google_use_key");
+    self.signOutRow.titleLabel.text = L(@"google_sign_out");
+    NSArray *main = signedIn ? @[self.checkRow, self.signInRow, self.keyRow] : @[self.signInRow, self.keyRow];
+    if (![self.groupMain.rows isEqualToArray:main]) self.groupMain.rows = main;
+    NSArray *out = signedIn ? @[self.signOutRow] : @[];
+    if (![self.groupOut.rows isEqualToArray:out]) self.groupOut.rows = out;
+    self.groupOut.hidden = !signedIn;
+    for (AccountRow *row in @[self.signInRow, self.checkRow, self.keyRow, self.signOutRow]) {
+        [row applyTheme];
+        row.enabled = !self.busy;
     }
     [self.view setNeedsLayout];
 }
@@ -356,33 +517,33 @@ static void RingColors(UIColor **outer, UIColor **inner) {
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
     CGFloat total = self.view.bounds.size.width;
-    CGFloat width = MIN(total - 40, 520);
+    CGFloat width = MIN(total - 32, 560);
     CGFloat x = (total - width) / 2;
-    CGFloat y = 24;
+    CGFloat y = 28;
     CGFloat ringSize = 132;
     self.ring.frame = CGRectMake((total - ringSize) / 2, y, ringSize, ringSize);
-    y += ringSize + 18;
+    y += ringSize + 14;
     self.nameLabel.frame = CGRectMake(x, y, width, 34);
-    y += 34 + 4;
+    y += 34 + 2;
     CGSize email = [self.emailLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
     self.emailLabel.frame = CGRectMake(x, y, width, ceil(email.height));
-    y += ceil(email.height) + 10;
+    y += ceil(email.height) + 8;
     CGSize info = [self.infoLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
     self.infoLabel.frame = CGRectMake(x, y, width, ceil(info.height));
-    y += ceil(info.height) + 28;
+    y += ceil(info.height) + 26;
 
-    CGFloat buttonHeight = 52;
-    NSArray *buttons = @[self.signInButton, self.checkButton, self.signOutButton, self.keyButton];
-    for (UIButton *button in buttons) {
-        if (button.hidden) continue;
-        button.frame = CGRectMake(x, y, width, buttonHeight);
-        button.layer.cornerRadius = MIN(MR(12, 26), buttonHeight / 2);
-        y += buttonHeight + 10;
+    CGFloat mainHeight = [self.groupMain heightForWidth:width];
+    self.groupMain.frame = CGRectMake(x, y, width, mainHeight);
+    y += mainHeight + 20;
+    if (!self.groupOut.hidden) {
+        CGFloat outHeight = [self.groupOut heightForWidth:width];
+        self.groupOut.frame = CGRectMake(x, y, width, outHeight);
+        y += outHeight + 20;
     }
     if (self.statusLabel.text.length > 0) {
         CGSize status = [self.statusLabel sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
-        self.statusLabel.frame = CGRectMake(x, y + 4, width, ceil(status.height));
-        y += 4 + ceil(status.height) + 10;
+        self.statusLabel.frame = CGRectMake(x, y, width, ceil(status.height));
+        y += ceil(status.height) + 10;
     } else {
         self.statusLabel.frame = CGRectZero;
     }

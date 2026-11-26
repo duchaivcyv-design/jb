@@ -1,3 +1,4 @@
+#import "cmcore.h"
 #import "ClaudeStream.h"
 #import "Strings.h"
 #import "AppSettings.h"
@@ -34,6 +35,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
 @property (assign, nonatomic) BOOL stallFired;
 @property (assign, nonatomic) NSInteger stallRetryCount;
 @property (strong, nonatomic) NSMutableURLRequest *savedRequest;
+- (void)processPayloadData:(NSData *)payload;
 @end
 
 @implementation ClaudeStream
@@ -114,7 +116,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
                           ([lowerModel containsString:@"claude-opus-5-"] && ![lowerModel containsString:@"claude-opus-5-5"]);
     BOOL needsFastBeta = isOpus5Preview || [lowerModel containsString:@"claude-opus-4-8"];
     if (self.useFastSpeed && supportsFast) payload[@"speed"] = @"fast";
-    AIReasoningLevel level = self.adaptiveReasoning > 0 ? (AIReasoningLevel)(self.adaptiveReasoning - 1) : [AppSettings reasoningLevel];
+    AIReasoningLevel level = [AppSettings reasoningLevel];
     BOOL adaptiveThinking = ([lowerModel containsString:@"-4-6"] || [lowerModel containsString:@"-4-7"] ||
                              [lowerModel containsString:@"-4-8"] || [lowerModel containsString:@"-5-"] ||
                              [lowerModel containsString:@"-6-"]);
@@ -141,7 +143,7 @@ static NSString *const kAnthropicVersion = @"2023-06-01";
     }
 
     if ([AppSettings webSearchEnabled]) {
-        payload[@"tools"] = @[@{ @"type": @"web_search_20250305", @"name": @"web_search", @"max_uses": @3 }];
+        payload[@"tools"] = @[@{ @"type": @"web_search_20250305", @"name": @"web_search", @"max_uses": @8 }];
     }
     NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
 
@@ -473,30 +475,27 @@ didReceiveResponse:(NSURLResponse *)response
 
 #pragma mark - SSE parsing
 
-- (void)drainBufferFinal:(BOOL)final {
-    NSData *newline = [NSData dataWithBytes:"\n" length:1];
-    while (YES) {
-        NSRange range = [self.buffer rangeOfData:newline options:0 range:NSMakeRange(0, self.buffer.length)];
-        if (range.location == NSNotFound) break;
-        NSData *lineData = [self.buffer subdataWithRange:NSMakeRange(0, range.location)];
-        [self.buffer replaceBytesInRange:NSMakeRange(0, range.location + 1) withBytes:NULL length:0];
-        [self processLineData:lineData];
-    }
-    if (final && self.buffer.length > 0) {
-        [self processLineData:[self.buffer copy]];
-        self.buffer.length = 0;
-    }
+// Called by the Rust framer once per "data:" line; the bytes are valid only during the call.
+static void ClaudeStreamPayload(void *ctx, const uint8_t *bytes, size_t length) {
+    ClaudeStream *stream = (__bridge ClaudeStream *)ctx;
+    NSData *payload = [NSData dataWithBytesNoCopy:(void *)bytes length:length freeWhenDone:NO];
+    [stream processPayloadData:payload];
 }
 
-- (void)processLineData:(NSData *)lineData {
-    NSString *line = [[NSString alloc] initWithData:lineData encoding:NSUTF8StringEncoding];
-    if (line == nil) return;
-    line = [line stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\r"]];
-    if (![line hasPrefix:@"data:"]) return;
-    NSString *payload = [[line substringFromIndex:5] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    if (payload.length == 0) return;
+- (void)drainBufferFinal:(BOOL)final {
+    // The Rust core (rust/cmcore) frames the stream: it says how much of the buffer is complete lines and hands back
+    // the JSON payload of each "data:" line. The ready bytes are cut off the buffer first, so callbacks that run
+    // while they are processed see a consistent buffer.
+    NSUInteger ready = cm_sse_complete_len((const uint8_t *)self.buffer.bytes, self.buffer.length, final ? 1 : 0);
+    if (ready == 0) return;
+    NSData *chunk = [self.buffer subdataWithRange:NSMakeRange(0, ready)];
+    if (ready >= self.buffer.length) self.buffer.length = 0;
+    else [self.buffer replaceBytesInRange:NSMakeRange(0, ready) withBytes:NULL length:0];
+    cm_sse_for_each_payload((const uint8_t *)chunk.bytes, chunk.length, 0, ClaudeStreamPayload, (__bridge void *)self);
+}
 
-    id json = [NSJSONSerialization JSONObjectWithData:[payload dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+- (void)processPayloadData:(NSData *)payload {
+    id json = [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil];
     if (![json isKindOfClass:[NSDictionary class]]) return;
     [self processEvent:json];
 }

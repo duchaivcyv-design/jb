@@ -22,12 +22,13 @@
 #import "ModelPopupViewController.h"
 #import "ConfirmPopupViewController.h"
 #import "ComposerViews.h"
+#import "GooFanView.h"
+#import "TopBlurView.h"
 #import "ChoicePopupViewController.h"
 #import "UpdateManager.h"
 #import "KeyTier.h"
 #import "OfficeExport.h"
 #import "VoiceChatManager.h"
-#import "GoogleAuth.h"
 #import "FontStyle.h"
 #import "Material.h"
 #import <math.h>
@@ -217,6 +218,12 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (strong, nonatomic) MaterialGradientView *gradientView;   // the moving accent gradient wallpaper
 @property (strong, nonatomic) UIView *dimView;
 @property (assign, nonatomic) CGFloat keyboardOverlap;
+@property (strong, nonatomic) GooFanView *gooFan;
+@property (strong, nonatomic) UIVisualEffectView *inputBlur;
+@property (assign, nonatomic) CGFloat lastDock;
+@property (assign, nonatomic) CGFloat lastTop;
+@property (assign, nonatomic) BOOL lastTopSent;
+@property (assign, nonatomic) BOOL lastDockSent;
 
 @property (strong, nonatomic) NSMutableDictionary *conversation;
 @property (copy, nonatomic) NSString *model;
@@ -229,7 +236,6 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
 @property (assign, nonatomic) NSInteger streamRetryCount;
 @property (assign, nonatomic) BOOL didRecoverModel404;
 @property (assign, nonatomic) BOOL didFallbackFromFastMode;
-@property (assign, nonatomic) BOOL didRetryGoogleAuth;   // one automatic retry with a fresh Google token after a 401/403
 @property (strong, nonatomic) NSMutableString *streamBuffer;
 @property (strong, nonatomic) NSMutableString *pendingJSDelta;
 @property (strong, nonatomic) dispatch_source_t deltaFlushTimer;
@@ -261,9 +267,9 @@ static UIImage *DrawChevronRightIconImage(CGFloat size, UIColor *color) {
     self.chatStageView.backgroundColor = [Theme background];
     [self.view addSubview:self.chatStageView];
 
-    UIBarButtonItem *menuItem = [[UIBarButtonItem alloc] initWithImage:[Theme iconMenu] style:UIBarButtonItemStylePlain target:self action:@selector(historyTapped)];
-    self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithImage:[Theme iconCompose] style:UIBarButtonItemStylePlain target:self action:@selector(newChatTapped)];
+    // The two buttons of the bar are round frosted glass (see TopBlurView.h)
+    UIBarButtonItem *menuItem = [self glassBarItemWithIcon:[Theme iconMenu] label:L(@"history_title") action:@selector(historyTapped)];
+    self.navigationItem.rightBarButtonItem = [self glassBarItemWithIcon:[Theme iconCompose] label:@"Chat mới" action:@selector(newChatTapped)];
 
     self.modelButton = [UIButton buttonWithType:UIButtonTypeCustom];
     self.modelButton.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
@@ -841,6 +847,62 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     return YES;
 }
 
+// `dock` is the height of the floating box (0 in Classic): the page gets that much room at its end, and a soft fade
+// over the last stretch above the box hides the hard edge of the text going under it.
+// The page runs under the see-through bar: it gets that much room above the first message (CSS --top), and the scroll
+// indicator stays below the bar.
+- (void)applyTopInset {
+    CGFloat top = 0;
+    if (@available(iOS 11.0, *)) top = self.view.safeAreaInsets.top;
+    // Do not trust the safe area alone: measure the bottom of the navigation bar in this view as well.
+    UINavigationBar *bar = self.navigationController.navigationBar;
+    if (bar && bar.window && self.view.window) {
+        CGRect barRect = [self.view convertRect:bar.bounds fromView:bar];
+        top = MAX(top, CGRectGetMaxY(barRect));
+    }
+    UIScrollView *sv = self.webView.scrollView;
+    UIEdgeInsets ind = sv.scrollIndicatorInsets;
+    if (fabs(ind.top - top) > 0.5) { ind.top = top; sv.scrollIndicatorInsets = ind; }
+    if (fabs(top - self.lastTop) < 0.5 && self.lastTopSent) return;
+    self.lastTop = top;
+    if (!self.webReady) { self.lastTopSent = NO; return; }
+    self.lastTopSent = YES;
+    [DiagnosticLog log:@"chat top inset %.0f", top];
+    [self.webView evaluateJavaScript:[NSString stringWithFormat:@"document.documentElement.style.setProperty('--top','%.0fpx');", top] completionHandler:nil];
+}
+
+- (void)applyDockFade:(CGFloat)dock {
+    // No mask over the web view any more: a mask forces the whole page through an offscreen pass on every frame of a scroll
+    // (that was a main cause of the lag). The message box is a real blur now, so the text going under it needs no fade.
+    if (self.webView.layer.mask) self.webView.layer.mask = nil;
+    if (fabs(dock - self.lastDock) < 0.5 && self.lastDockSent) return;
+    self.lastDock = dock;
+    if (!self.webReady) { self.lastDockSent = NO; return; }
+    self.lastDockSent = YES;
+    [self.webView evaluateJavaScript:[NSString stringWithFormat:@"document.documentElement.style.setProperty('--dock','%.0fpx');", dock] completionHandler:nil];
+}
+
+// Material 3: blur behind the message box, a light tint over it; Classic: the plain solid surface.
+- (void)styleInputBoxGlass {
+    BOOL material = [Material active];
+    self.inputBlur.hidden = !material;
+    self.inputBlur.effect = [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleDark : UIBlurEffectStyleLight];
+    self.inputBlur.frame = self.inputBox.bounds;
+    self.inputBlur.layer.cornerRadius = self.inputBox.layer.cornerRadius;
+    self.inputBox.backgroundColor = material ? [UIColor clearColor] : [Theme surface];   // Material: no colour over the glass, only the blur
+    TopBlurStripTint(self.inputBlur);
+}
+
+- (UIBarButtonItem *)glassBarItemWithIcon:(UIImage *)icon label:(NSString *)label action:(SEL)action {
+    GlassBarButton *button = [GlassBarButton buttonWithIcon:icon label:label target:self action:action];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button.widthAnchor constraintEqualToConstant:38].active = YES;
+    [button.heightAnchor constraintEqualToConstant:38].active = YES;
+    UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithCustomView:button];
+    item.accessibilityLabel = label;
+    return item;
+}
+
 - (void)unlockWebViewScrolling {
     if (!self.webView) return;
     // While the chat is empty the page is pinned (nothing to scroll, no rubber band), so the greeting card stays put.
@@ -901,6 +963,11 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.inputBox.layer.borderWidth = 1;
     self.inputBox.layer.borderColor = [Theme border].CGColor;
     [self.inputBar addSubview:self.inputBox];
+    // Material 3: the box is real frosted glass (a live blur of what is behind it) with no colour on top.
+    self.inputBlur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleDark : UIBlurEffectStyleLight]];
+    self.inputBlur.userInteractionEnabled = NO;
+    self.inputBlur.clipsToBounds = YES;
+    [self.inputBox insertSubview:self.inputBlur atIndex:0];
 
     self.attachButton = [UIButton buttonWithType:UIButtonTypeCustom];
     [self.attachButton setImage:[Theme iconPlus] forState:UIControlStateNormal];
@@ -1129,7 +1196,13 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 
     }
 
-    self.webView.frame = CGRectMake(0, 0, width, CGRectGetMinY(self.inputBar.frame));
+    // Material 3: the page runs behind the floating box down to the bottom edge, with extra room at its end (the "dock")
+    // so the last line can still be scrolled clear of the box, and fades out under the box instead of being cut off.
+    CGFloat webBottom = CGRectGetMinY(self.inputBar.frame);
+    if (material) webBottom = self.keyboardOverlap > 0 ? height - self.keyboardOverlap : height;
+    self.webView.frame = CGRectMake(0, 0, width, webBottom);
+    [self applyDockFade:material ? MAX(0, webBottom - CGRectGetMinY(self.inputBar.frame)) : 0];
+    [self applyTopInset];
     // Material 3: the message box floats (no panel and no line under it), so the wallpaper or the moving gradient runs
     // behind it down to the bottom edge; the page itself still stops above the box.
     CGRect backdrop = material ? CGRectMake(0, 0, width, height) : self.webView.frame;
@@ -1138,10 +1211,11 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     self.dimView.frame = self.wallpaperView.bounds;
     [self.inputBar viewWithTag:1001].hidden = material;
     self.inputBar.backgroundColor = material ? [UIColor clearColor] : [Theme background];
+    [self styleInputBoxGlass];
     CALayer *boxLayer = self.inputBox.layer;
     if (material) {
         boxLayer.shadowColor = [UIColor blackColor].CGColor;
-        boxLayer.shadowOpacity = [Theme darkMode] ? 0.38 : 0.14;
+        boxLayer.shadowOpacity = [Theme darkMode] ? 0.22 : 0.10;
         boxLayer.shadowRadius = 14;
         boxLayer.shadowOffset = CGSizeMake(0, 5);
         boxLayer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:self.inputBox.bounds cornerRadius:boxLayer.cornerRadius].CGPath;
@@ -1588,7 +1662,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self updateModelTitle];
     self.inputBar.backgroundColor = [Material active] ? [UIColor clearColor] : [Theme background];
     [self.inputBar viewWithTag:1001].backgroundColor = [Theme border];
-    self.inputBox.backgroundColor = [Theme surface];
+    [self styleInputBoxGlass];
     self.inputBox.layer.borderColor = [Theme border].CGColor;
     self.inputBox.layer.cornerRadius = MIN(MR(22, 28), MAX(1, self.inputBox.bounds.size.height / 2.0));   // Material 3 shape; changes at once with the design switch
     self.attachButton.tintColor = [Theme secondaryText];
@@ -1734,6 +1808,9 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     if ([type isEqualToString:@"ready"]) {
         [DiagnosticLog log:@"chat page ready"];
         self.webReady = YES;
+        self.lastDockSent = NO;
+        self.lastTopSent = NO;
+        [self.view setNeedsLayout];
         [self revealWebView];
         [self pushThemeToWeb];
         [self applyUIScaleToNativeAndWeb];
@@ -1850,6 +1927,9 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    self.lastTopSent = NO;      // a new page starts without the inset variables: send them again
+    self.lastDockSent = NO;
+    [self.view setNeedsLayout];
     [self unlockWebViewScrolling];
     [self applyUIScaleToNativeAndWeb];
 }
@@ -2355,17 +2435,54 @@ static const CGFloat kDrawerWidthRatio = 0.62;
 }
 
 - (void)attachTapped {
-    if (self.streaming || self.toolMenuOverlay) return;
+    if (self.streaming || self.toolMenuOverlay || self.gooFan) return;
     [self.view endEditing:YES];
+    BOOL material = [Material active];
     if (self.keyboardOverlap <= 0) {
-        [self showToolMenu];
+        if (material) [self showGooFan]; else [self showToolMenu];
     } else {
         __weak typeof(self) weakSelf = self;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(260 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
             ChatViewController *me = weakSelf;
-            if (me && !me.streaming) [me showToolMenu];
+            if (!me || me.streaming || me.gooFan) return;
+            if ([Material active]) [me showGooFan]; else [me showToolMenu];
         });
     }
+}
+
+// Material 3: the + opens a gooey fan of the common actions; the three dots open the full list.
+- (void)showGooFan {
+    if (self.gooFan) return;
+    __weak typeof(self) weakSelf = self;
+    BOOL canUseCamera = [UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeCamera];
+    NSMutableArray *items = [NSMutableArray array];
+    [items addObject:[GooFanItem itemWithTitle:@"Ảnh" icon:[GooFanView glyph:@"photo"] handler:^{ [weakSelf performToolMenuItem:0]; }]];
+    if (canUseCamera) [items addObject:[GooFanItem itemWithTitle:@"Camera" icon:[GooFanView glyph:@"camera"] handler:^{ [weakSelf performToolMenuItem:3]; }]];
+    [items addObject:[GooFanItem itemWithTitle:@"Tệp" icon:[GooFanView glyph:@"file"] handler:^{ [weakSelf performToolMenuItem:1]; }]];
+    GooFanItem *search = [GooFanItem itemWithTitle:L(@"search_chip_title") icon:[GooFanView glyph:@"search"] handler:^{ [weakSelf performToolMenuItem:4]; }];
+    search.highlighted = [AppSettings webSearchEnabled];
+    [items addObject:search];
+    [items addObject:[GooFanItem itemWithTitle:@"Thêm" icon:[GooFanView glyph:@"dots"] handler:^{ [weakSelf showToolMenu]; }]];
+    UIView *stage = self.chatStageView;
+    CGPoint anchor = [stage convertPoint:CGPointMake(CGRectGetMidX(self.attachButton.bounds), CGRectGetMidY(self.attachButton.bounds)) fromView:self.attachButton];
+    // The buttons open in a straight row just above the message box, in line with it (the first one right above the +).
+    CGRect box = [stage convertRect:self.inputBox.bounds fromView:self.inputBox];
+    CGFloat rowY = CGRectGetMinY(box) - 14 - 22;
+    CGFloat safeTop = 0;
+    if (@available(iOS 11.0, *)) safeTop = self.view.safeAreaInsets.top;
+    if (rowY - 22 < safeTop + 8) rowY = 0;   // no room above the box: the old fan
+    GooFanView *fan = [[GooFanView alloc] initWithFrame:stage.bounds anchor:anchor rowY:rowY items:items];
+    fan.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    fan.onClosed = ^{
+        ChatViewController *me = weakSelf;
+        if (!me) return;
+        me.gooFan = nil;
+        me.attachButton.alpha = me.streaming ? 0.4 : 1.0;
+    };
+    self.gooFan = fan;
+    [stage addSubview:fan];
+    self.attachButton.alpha = 0;   // the blob of the menu takes the place of the +
+    [fan open];
 }
 
 - (void)dismissToolMenu {
@@ -2389,8 +2506,14 @@ static const CGFloat kDrawerWidthRatio = 0.62;
     [self dismissToolMenu];
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(190 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        ChatViewController *me = weakSelf;
-        if (!me) return;
+        [weakSelf performToolMenuItem:item];
+    });
+}
+
+// The actions of the + menu (the list card and the Material 3 fan share them).
+- (void)performToolMenuItem:(NSInteger)item {
+    {
+        ChatViewController *me = self;
         if (item <= 3 && (NSInteger)me.pendingAttachments.count + me.importsInFlight >= kMaxAttachmentsPerMessage) {
             [me showAlertMessage:[NSString stringWithFormat:L(@"att_err_limit"), (long)kMaxAttachmentsPerMessage]];
             return;
@@ -2432,7 +2555,7 @@ static const CGFloat kDrawerWidthRatio = 0.62;
             default:
                 break;
         }
-    });
+    }
 }
 
 - (void)addToolMenuRowToCard:(UIView *)card y:(CGFloat)y icon:(NSString *)icon title:(NSString *)title subtitle:(NSString *)subtitle tag:(NSInteger)tag width:(CGFloat)width {
@@ -2991,12 +3114,37 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     self.streamRetryCount = 0;
     self.didRecoverModel404 = NO;
     self.didFallbackFromFastMode = NO;
-    self.didRetryGoogleAuth = NO;
     self.streaming = YES;
     [self updateSendButton];
     [self startDeltaFlushTimer];
     [self callJS:@"begin" args:@[]];
     [self launchRequestStreaming:YES];
+}
+
+// Real clock, read at the moment each request is built: never a number typed into the prompt.
+static NSString *CMLiveClockDirective(void) {
+    NSDate *now = [NSDate date];
+    NSTimeZone *zone = [NSTimeZone localTimeZone];
+    NSLocale *locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    NSDateFormatter *full = [[NSDateFormatter alloc] init];
+    full.locale = locale;
+    full.timeZone = zone;
+    full.dateFormat = @"EEEE, d MMMM yyyy, HH:mm:ss";
+    NSDateFormatter *iso = [[NSDateFormatter alloc] init];
+    iso.locale = locale;
+    iso.timeZone = zone;
+    iso.dateFormat = @"yyyy-MM-dd'T'HH:mm:ssZZZZZ";
+    NSInteger year = [[NSCalendar currentCalendar] component:NSCalendarUnitYear fromDate:now];
+    NSInteger offset = [zone secondsFromGMTForDate:now];
+    return [NSString stringWithFormat:
+            @"\n\n[LIVE CLOCK - read from the user's device when this request was sent]\n"
+            @"Now: %@ (%@, UTC%+ld:%02ld)\nISO 8601: %@\nUnix time: %lld\nCurrent year: %ld\n"
+            @"This clock is the truth. Your training data is older than this date: never answer the year, month, day, weekday or time from memory, "
+            @"never say the year is 2024 or any other remembered year, and use this clock for every \"today / now / this year / latest\" calculation. "
+            @"Anything that can change after your training (news, prices, scores, versions, releases, laws, who holds an office, weather) must be checked "
+            @"with the web search tool first, even small things; answer from the results and say plainly when a search did not settle it.",
+            [full stringFromDate:now], zone.name, (long)(offset / 3600), (long)(labs((long)offset) % 3600 / 60),
+            [iso stringFromDate:now], (long long)[now timeIntervalSince1970], (long)year];
 }
 
 - (NSString *)effectiveSystemPrompt {
@@ -3019,9 +3167,9 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
     for (NSString *signal in codingSignals) {
         if ([lowerQuery containsString:signal]) { codingTask = YES; break; }
     }
-    selectedPrompt = [selectedPrompt stringByAppendingString:[self currentDateDirective]];
     NSString *responseDirective = @"\n\n[RESPONSE COMPLETENESS] Unless the user explicitly asks for a short answer, answer every part with enough useful detail to act on it. Do not substitute a long outline for the requested explanation, implementation, or deliverable. Include relevant steps, examples, assumptions, and limitations without filler. For technical topics, identify the actual cause before proposing a change; distinguish verified facts from hypotheses. Never claim a search, API action, file edit, or build succeeded unless it actually did.";
     selectedPrompt = [selectedPrompt stringByAppendingString:responseDirective];
+    selectedPrompt = [selectedPrompt stringByAppendingString:CMLiveClockDirective()];
     if (codingTask) {
         NSString *codingDirective = @"\n\n[CODING RESPONSE REQUIREMENTS] For a coding, debugging, or source-editing request, deliver implementation rather than an outline alone. Include the complete requested function or changed file sections with all required declarations/imports; do not replace code with ellipses, placeholders, TODOs, or pseudo-code. Do not describe a large architecture while returning only a tiny code fragment. When the user asks for a complete file or a large implementation, provide the full requested code, not a shortened sample. Do not arbitrarily stop after the design or first few functions; continue until every requested component is implemented. Preserve unrelated behavior and make only requested changes. Check method names, property declarations, types, API payload fields, and error paths for consistency. Explain the exact files and behavior changed, then clearly state anything not build-tested. Prefer complete, compilable code over an inflated architecture proposal. The app automatically requests continuation when the provider reports its output-token limit; continue from the exact next line without repeating earlier code. If continuation cannot proceed because the model context or provider limit is reached, state the precise remaining section instead of claiming the work is complete.";
         selectedPrompt = [selectedPrompt stringByAppendingString:codingDirective];
@@ -3030,76 +3178,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         selectedPrompt = [selectedPrompt stringByAppendingString:@"\n\n[WEB SEARCH ENABLED] A real provider-managed web search tool is attached to this request. When the user explicitly asks to search, or the answer depends on current, recent, external, or verifiable information, you MUST invoke the search tool before answering and base factual claims on the returned results. Do not claim to have searched unless the API actually returned results. If the selected model/provider rejects or does not support the tool, state that limitation plainly instead of pretending the search happened." ];
     }
     return selectedPrompt;
-}
-
-// Without this the model only knows the year its training ended in and answers "2024" in 2026.
-- (NSString *)currentDateDirective {
-    NSDate *now = [NSDate date];
-    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
-    formatter.timeZone = [NSTimeZone localTimeZone];
-    formatter.dateFormat = @"EEEE, d MMMM yyyy";
-    NSInteger year = [[NSCalendar currentCalendar] component:NSCalendarUnitYear fromDate:now];
-    NSInteger offsetMinutes = [[NSTimeZone localTimeZone] secondsFromGMT] / 60;
-    NSString *zone = [NSString stringWithFormat:@"UTC%@%02ld:%02ld", offsetMinutes < 0 ? @"-" : @"+",
-                      (long)labs(offsetMinutes) / 60, (long)labs(offsetMinutes) % 60];
-    return [NSString stringWithFormat:@"\n\n[CURRENT DATE] Today is %@ (device time zone %@). The current year is %ld. Your training data ends before this date, so never assume it is an earlier year, and for anything that can change over time (news, prices, versions, who holds an office, schedules, results) rely on the web search tool when it is available instead of on memory.",
-            [formatter stringFromDate:now], zone, (long)year];
-}
-
-// Matches the thinking effort to the question: a one-line factual question does not need half a minute of reasoning,
-// while a long or technical one gets the full effort (and the longest reasoning summary). Returns AIReasoningLevel + 1.
-- (NSInteger)adaptiveReasoningValue {
-    AIReasoningLevel setting = [AppSettings reasoningLevel];
-    NSArray *messages = self.conversation[@"messages"];
-    NSString *query = @"";
-    NSUInteger attachmentCount = 0;
-    NSUInteger previousAnswerChars = 0;
-    for (NSInteger i = (NSInteger)messages.count - 1; i >= 0; i--) {
-        NSDictionary *message = messages[(NSUInteger)i];
-        if (query.length == 0 && [message[@"role"] isEqualToString:@"user"] && [message[@"text"] isKindOfClass:[NSString class]]) {
-            query = message[@"text"];
-            NSArray *atts = message[@"attachments"];
-            if ([atts isKindOfClass:[NSArray class]]) attachmentCount = atts.count;
-        } else if (query.length > 0 && [message[@"role"] isEqualToString:@"assistant"] && [message[@"text"] isKindOfClass:[NSString class]]) {
-            previousAnswerChars = [message[@"text"] length];
-            break;
-        }
-    }
-    NSString *lower = query.lowercaseString ?: @"";
-    NSUInteger length = query.length;
-    NSInteger score = 0;
-    if (length > 120) score += 1;
-    if (length > 400) score += 1;
-    if (length > 1500) score += 1;
-    if (attachmentCount > 0) score += 1;
-    if ([lower containsString:@"```"] || [[query componentsSeparatedByString:@"\n"] count] > 6) score += 1;
-    NSUInteger questionMarks = [[query componentsSeparatedByString:@"?"] count] - 1;
-    if (questionMarks >= 3) score += 1;
-    NSArray *hardSignals = @[@"so sánh", @"phân tích", @"tại sao", @"vì sao", @"giải thích", @"thiết kế", @"kiến trúc", @"tối ưu",
-                             @"debug", @"lỗi", @"sửa", @"viết code", @"code", @"thuật toán", @"chứng minh", @"giải bài",
-                             @"phương trình", @"kế hoạch", @"chiến lược", @"đánh giá", @"ưu nhược", @"từng bước",
-                             @"compare", @"analy", @"why ", @"explain", @"design", @"optimi", @"prove", @"algorithm",
-                             @"architecture", @"step by step", @"implement", @"refactor"];
-    NSInteger hits = 0;
-    for (NSString *signal in hardSignals) { if ([lower containsString:signal]) hits++; }
-    score += MIN(hits, 3);
-
-    AIReasoningLevel level = setting;
-    if (score >= 6) {
-        if (level < AIReasoningLevelVeryHigh) level = AIReasoningLevelVeryHigh;
-    } else if (score >= 4) {
-        if (level < AIReasoningLevelHigh) level = AIReasoningLevelHigh;
-    } else if (score <= 1 && length < 100) {
-        // a short, simple message: do not spend half a minute thinking about it
-        AIReasoningLevel cap = (previousAnswerChars > 800 || attachmentCount > 0) ? AIReasoningLevelMedium : AIReasoningLevelLow;
-        if (score == 0 && level > cap) level = cap;
-        else if (score == 1 && level > AIReasoningLevelMedium) level = AIReasoningLevelMedium;
-    } else if (score <= 1) {
-        if (level > AIReasoningLevelMedium) level = AIReasoningLevelMedium;
-    }
-    [DiagnosticLog log:@"reasoning: setting=%ld used=%ld score=%ld len=%lu", (long)setting, (long)level, (long)score, (unsigned long)length];
-    return (NSInteger)level + 1;
 }
 
 - (NSString *)summaryOfTurns:(NSArray *)turns {
@@ -3144,7 +3222,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
         [(id)stream setValue:@(fastEnabled) forKey:@"useFastSpeed"];
     }
     stream.useStreaming = useStreaming;
-    stream.adaptiveReasoning = [self adaptiveReasoningValue];
     self.stream = stream;
     if (!self.streamGeneratedAttachments) self.streamGeneratedAttachments = [NSMutableArray array];
     self.requestStartTime = CFAbsoluteTimeGetCurrent();
@@ -3256,21 +3333,6 @@ didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> 
          [lowerDetail containsString:@"billing"] || [lowerDetail containsString:@"spend limit"] ||
          [lowerDetail containsString:@"spend cap"] || [lowerDetail containsString:@"usage limit"] ||
          [lowerDetail containsString:@"payment"] || [lowerDetail containsString:@"quota_exceeded"]);
-
-    // Google sign-in: a 401/403 can just mean the access token went stale. Get a fresh one and try once more.
-    BOOL googleAuthRetry = (currentProvider == AIProviderGemini) && [KeyStore geminiUsesGoogleAccount] &&
-                           (status == 401 || status == 403) && partial.length == 0 &&
-                           self.streamGeneratedAttachments.count == 0 && !self.didRetryGoogleAuth;
-    if (googleAuthRetry) {
-        self.didRetryGoogleAuth = YES;
-        self.stream = nil;
-        [GoogleAuth discardAccessToken];
-        [DiagnosticLog log:@"HTTP %ld with Google sign-in: retrying once with a fresh access token", (long)status];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (self.streaming && self.stream == nil) [self launchRequestStreaming:self.attemptIsStreaming];
-        });
-        return;
-    }
 
     BOOL wasFastRequest = self.stream && [AppSettings fastModeEnabled] && !self.didFallbackFromFastMode;
     NSString *fastErrorText = lowerDetail;

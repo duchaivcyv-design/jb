@@ -942,6 +942,7 @@ static const void *kStretchKey = &kStretchKey;
 @property (assign, nonatomic) CGFloat pull;           // finger distance past the edge, in points
 @property (assign, nonatomic) NSInteger edge;         // +1 stretched from the top, -1 from the bottom, 0 none
 @property (assign, nonatomic) CGFloat lastTranslation;
+@property (assign, nonatomic) CGFloat lastOffsetY;   // the offset after the previous pan event (to see how much of a move went past an end)
 @property (assign, nonatomic) NSUInteger generation;
 @property (strong, nonatomic) CADisplayLink *link;
 @property (assign, nonatomic) CGFloat lastY;
@@ -1052,6 +1053,7 @@ static const void *kStretchKey = &kStretchKey;
             // count from the first one (no dead zone): the content starts to stretch the moment the finger moves.
             BOOL atTop = sv.contentOffset.y <= [self topOffset] + 0.5, atBottom = sv.contentOffset.y >= [self bottomOffset] - 0.5;
             self.lastTranslation = (atTop || atBottom) ? 0 : translation;
+            self.lastOffsetY = sv.contentOffset.y;
             break;
         }
         case UIGestureRecognizerStateChanged: {
@@ -1072,13 +1074,20 @@ static const void *kStretchKey = &kStretchKey;
                     self.pull = pulled;
                     sv.contentOffset = CGPointMake(sv.contentOffset.x, self.edge > 0 ? top : bottom);   // pinned to the edge
                 }
-            } else if (y <= top + 0.5 && dy > 0) {
+            } else if (y <= top + 6 && dy > 0) {
+                // The offset that was expected from the finger (the last one minus the move) against where the list
+                // really is tells how much of this move went past the end; when the list was already at the end, all of it.
+                CGFloat past = top - (self.lastOffsetY - dy);
                 self.edge = 1;
-                self.pull = dy;
-            } else if (y >= bottom - 0.5 && dy < 0) {
+                self.pull = (y <= top + 0.5 && past > 0) ? MIN(dy, past) : MAX(dy * 0.5, 0.5);
+                if (self.lastOffsetY <= top + 0.5) self.pull = dy;
+            } else if (y >= bottom - 6 && dy < 0) {
+                CGFloat past = (self.lastOffsetY - dy) - bottom;
                 self.edge = -1;
-                self.pull = -dy;
+                self.pull = (y >= bottom - 0.5 && past > 0) ? MIN(-dy, past) : MAX(-dy * 0.5, 0.5);
+                if (self.lastOffsetY >= bottom - 0.5) self.pull = -dy;
             }
+            self.lastOffsetY = sv.contentOffset.y;
             [self applyPull:self.pull edge:self.edge];
             break;
         }

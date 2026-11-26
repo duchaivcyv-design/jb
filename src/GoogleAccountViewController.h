@@ -6,6 +6,7 @@
 #pragma mark - Ring of dots around a logo
 
 @interface GoogleRingView : UIView
+@property (strong, nonatomic) UIImage *avatar;   // the profile picture, shown round inside the rings instead of the mark
 - (void)startSpinning;   // two dotted rings turn slowly in opposite directions; still under Reduce Motion
 @end
 

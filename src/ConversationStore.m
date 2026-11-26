@@ -30,6 +30,30 @@ static NSString *FilePath(NSString *cid) {
     return [ChatsDir() stringByAppendingPathComponent:[cid stringByAppendingString:@".json"]];
 }
 
+// Disk writes run on one serial background queue so a save never stalls the UI thread.
+// Everything that reads or deletes files first waits for the writes already queued (DrainIO).
+static dispatch_queue_t IOQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("com.puc.claudemini.store", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+        // Leaving the foreground: finish pending writes before iOS may suspend the app.
+        [[NSNotificationCenter defaultCenter] addObserverForName:@"UIApplicationDidEnterBackgroundNotification"
+                                                          object:nil queue:nil
+                                                      usingBlock:^(NSNotification *note) { dispatch_sync(queue, ^{}); }];
+    });
+    return queue;
+}
+
+static void DrainIO(void) {
+    dispatch_sync(IOQueue(), ^{});
+}
+
+static void WriteAsync(NSData *data, NSString *path) {
+    if (!data || !path) return;
+    dispatch_async(IOQueue(), ^{ [data writeToFile:path options:NSDataWritingAtomic error:nil]; });
+}
+
 @implementation ConversationStore
 
 #pragma mark - Index
@@ -40,7 +64,7 @@ static NSArray *gIndexCache;
 + (void)writeIndex:(NSArray *)entries {
     @synchronized (self) { gIndexCache = [entries copy]; }
     NSData *data = [NSJSONSerialization dataWithJSONObject:entries options:0 error:nil];
-    if (data) [data writeToFile:IndexPath() options:NSDataWritingAtomic error:nil];
+    WriteAsync(data, IndexPath());
 }
 
 + (NSArray *)rebuildIndex {
@@ -67,6 +91,7 @@ static NSArray *gIndexCache;
 }
 
 + (NSArray *)readIndexFromDisk {
+    DrainIO();
     NSData *data = [NSData dataWithContentsOfFile:IndexPath()];
     if (data.length == 0) return [self rebuildIndex];
     id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -101,6 +126,7 @@ static NSArray *gIndexCache;
 
 + (NSMutableDictionary *)loadConversationWithId:(NSString *)cid {
     if (!ValidId(cid)) return nil;
+    DrainIO();
     NSData *data = [NSData dataWithContentsOfFile:FilePath(cid)];
     if (data.length == 0) return nil;
     id obj = [NSJSONSerialization JSONObjectWithData:data
@@ -117,7 +143,7 @@ static NSArray *gIndexCache;
     if (!ValidId(cid)) return;
     NSData *data = [NSJSONSerialization dataWithJSONObject:conv options:0 error:nil];
     if (!data) return;
-    [data writeToFile:FilePath(cid) options:NSDataWritingAtomic error:nil];
+    WriteAsync(data, FilePath(cid));
 
     NSMutableArray *entries = [[self rawIndex] mutableCopy];
     for (NSInteger i = (NSInteger)entries.count - 1; i >= 0; i--) {
@@ -131,6 +157,7 @@ static NSArray *gIndexCache;
 
 + (void)deleteConversationWithId:(NSString *)cid {
     if (!ValidId(cid)) return;
+    DrainIO();
     [[NSFileManager defaultManager] removeItemAtPath:FilePath(cid) error:nil];
     [AttachmentStore deleteDirectoryForConversation:cid];
     NSMutableArray *entries = [[self rawIndex] mutableCopy];
@@ -150,6 +177,7 @@ static NSArray *gIndexCache;
 
 + (void)deleteAll {
     @synchronized (self) { gIndexCache = nil; }
+    DrainIO();
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *file in [fm contentsOfDirectoryAtPath:ChatsDir() error:nil]) {
         [fm removeItemAtPath:[ChatsDir() stringByAppendingPathComponent:file] error:nil];

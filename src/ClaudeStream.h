@@ -9,7 +9,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithKey:(NSString *)key model:(NSString *)model turns:(NSArray *)turns system:(nullable NSString *)system;
 
 @property (assign, nonatomic) BOOL useStreaming;
-@property (assign, nonatomic) NSInteger adaptiveReasoning;
 @property (assign, nonatomic) BOOL useFastSpeed;
 @property (assign, nonatomic) NSTimeInterval retryAfterSeconds;
 @property (copy, nonatomic, nullable) void (^onDelta)(NSString *text);

@@ -27,14 +27,28 @@ mkdir -p "$APPDIR" "$DIST"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 echo "SDK: $SDK"
 
+echo "==> Building the Rust core (aarch64-apple-ios, iOS 12.0+)"
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo not found: install Rust first (https://rustup.rs)" >&2
+  exit 1
+fi
+rustup target add aarch64-apple-ios >/dev/null 2>&1 || true
+export IPHONEOS_DEPLOYMENT_TARGET=12.0
+cargo build --release --manifest-path rust/cmcore/Cargo.toml --target aarch64-apple-ios
+RUST_LIB="rust/cmcore/target/aarch64-apple-ios/release/libcmcore.a"
+if [ ! -f "$RUST_LIB" ]; then
+  echo "missing $RUST_LIB" >&2
+  exit 1
+fi
+
 echo "==> Compiling (arm64, iOS 12.0+)"
 xcrun --sdk iphoneos clang \
   -arch arm64 \
   -miphoneos-version-min=12.0 \
   -isysroot "$SDK" \
   -fobjc-arc -fmodules -O2 -Wall -Wno-deprecated-declarations \
-  src/*.m src/*.c \
-  -framework UIKit -framework Foundation -framework Security -framework AuthenticationServices -framework WebKit -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreText -lz \
+  src/*.m "$RUST_LIB" \
+  -framework UIKit -framework Foundation -framework Security -framework AuthenticationServices -framework WebKit -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreText -liconv -lresolv \
   -o "$APPDIR/$APP"
 
 echo "==> Compiling the icon helper (setuid root in the .deb only)"

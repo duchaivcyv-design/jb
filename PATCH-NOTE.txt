@@ -1,17 +1,3 @@
-ClaudeMini 0.8.0-23 (beta): thinking, date, web, stutter
-- Thinking: the thoughts now show live, outside the folded line, typed out smoothly while the model thinks; they fold into
-  "Thought for N s" when the answer starts (tap to read again; fold it yourself and it stays folded).
-- Thinking effort follows the question: a short simple message uses minimal/low effort (no more 35 s for "what year is it");
-  long, technical or multi-part questions use at least High, the hardest at least Very high. See "reasoning:" in the
-  diagnostics log. Note: Gemini only returns a short SUMMARY of its thoughts; a higher effort makes it think longer and
-  the summary richer, but its length and wording are the provider's.
-- Date: every request now states today's date, so the model no longer answers with its training year.
-- Web search is ON by default (new setting key, so it starts on for everyone; the search button still turns it off).
-- Stutter: smooth typing of the answer (steps grow with the backlog, so bursts catch up without stopping), long replies are
-  redrawn less often, and a growing code block is no longer re-highlighted/cached on every redraw (cost grew with the
-  square of the reply and froze the page).
-- Google sign-in: a 401/403 now triggers one automatic retry with a fresh access token before the error is shown.
-
 ClaudeMini 0.7.4-1 (beta)
 
 Chat:
@@ -197,3 +183,84 @@ Sua khoa developer (beta): bo 50 ma skip; chi co 1 mat khau duy nhat. Sai 15 lan
 [0.8.0 beta 22]
 - Material 3 message box now floats: no panel behind it and no line above it. The wallpaper or the moving gradient runs behind the box down to the bottom edge (also under the home indicator), the page still stops above the box, and the box has a soft shadow (stronger in dark mode). Classic keeps the panel and the line.
 - Not compiled or run on a device.
+
+[0.8.0 beta 23]
+- Google profile sync: signing in now also asks for the "profile" scope; the name and the picture come from the ID token (userinfo as fallback, once per launch, for sessions that signed in before) and the picture is saved on the device (Application Support). GoogleAuth.accountName / accountAvatar / refreshProfileIfNeeded. Sign-out deletes the name, the picture and the file. Accounts that signed in before this beta must sign in again once to grant "profile" (the fallback only works with that scope).
+- The avatar is drawn round inside the dotted rings instead of the Claude mark, in the card at the top of Settings (title = the Google name, line under it = email) and on the account screen; no avatar yet or signed out: the Claude mark. The card refreshes by itself when the name or the picture arrives.
+- Account screen redone like the Apple Account page in Material 3: big round avatar, bold name, grey email, then grouped rounded cards of rows (coloured icon badge, title, chevron): Check connection / Sign in again / Use API key; and a separate card with Sign out in the error colour. Press highlight, busy state dims the rows, status line and sign-out confirmation kept.
+- Stretch overscroll at the bottom (and top) shows on the first pull: the move that carries the page to its end now counts the part that went past the end (expected offset against real offset), and the edge zone is 6 pt instead of 0.5 pt.
+- Not compiled or run on a device.
+
+[0.8.0 beta 24]
+- Fix: the message box cut the AI answers with a hard line above it (Material 3). The chat page now runs behind the floating box down to the bottom edge, has extra room at its end (CSS --dock = height of the box, so the last line still scrolls clear of the box), and fades out softly over the last stretch above the box (gradient mask on the web view) instead of being cut. Classic is unchanged.
+- Not compiled or run on a device.
+
+[0.8.0 beta 25]
+- New gooey + menu (Material 3), after Lucian UX/UI element #460 (MIT): tapping + turns it into an accent blob that squashes like a droplet and splits off into a fan of round buttons (Photo, Camera, File, Web search - ringed when on, and three dots = the full tool list). Closing (x, a tap outside, or choosing an action) pulls the buttons back stickily into one. The necks between the blobs are metaball bridges redrawn every frame (CADisplayLink) from the live positions. Colours follow the accent (fill) and its contrast colour (icons), so it changes with the skin, the custom accent and the app icon colour. Reduce Motion: no animation, the final states still work. Classic keeps the old list card. New files src/GooFanView.h/.m; the action switch of the old menu became performToolMenuItem: and is shared.
+- Material 3 is now the default look: a fresh install starts with it, and the first launch of every newly installed version selects it again (it can be switched back to Classic afterwards, until the next update).
+- Not compiled or run on a device.
+
+[0.8.0 beta 26]
+- See-through top bar with progressive blur (both designs): the navigation bar is now transparent and the page runs under it; behind the bar a TopBlurView (src/TopBlurView.h/.m) blurs what is under it - three stacked UIVisualEffectViews, each masked with its own fade, so the blur is strongest at the top edge and fades away downwards with no colour gradient (blur style follows light/dark). It sits in MiniNavigationController below the bar and covers the status bar too.
+- Screens that scroll run under the bar (chat, history, settings, Google account, appearance, accent colour, software update, model list); the other screens (system prompt, diagnostics, key screen, font preview) keep their layout from the bottom of the bar (edgesForExtendedLayout set per screen).
+- Chat page: the first message is pushed down by the height of the bar through the CSS variable --top (set from the safe area), the scroll indicator starts under the bar.
+- The two buttons of the chat bar (menu, new chat) are round frosted-glass buttons (GlassBarButton: blur, a hint of the accent, thin light edge, press-scale with a spring), like the back button of the reference picture.
+- Not compiled or run on a device. Layout risk: screens with their own frame layout may sit differently; tell me which ones.
+
+[0.8.0 beta 27]
+- Real blur at the top: the first version masked a UIVisualEffectView, which makes the system drop the blur (only a tint was left). TopBlurView now cuts the bar into 16 thin strips; each strip is a live UIVisualEffectView whose blur strength is set by a paused UIViewPropertyAnimator (fractionComplete), strongest at the top edge and falling off strip by strip. No mask and no colour gradient. Rebuilt on light/dark change, when the view gets a window and when the app becomes active (the system resets the blur in the background).
+- Real blur in the chat: the message box (Material 3) has a UIVisualEffectView behind its content with only a light tint over it (was a plain colour); the shadow was lowered so it does not dirty the glass. Classic keeps the solid box.
+- Fix: the greeting card of an empty chat sat under the bar (CSS .empty top: 29px) -> top: calc(29px + var(--top)).
+- Thinking line: the star is centred in its own box (flex), nudged 1 px up, and the text has an explicit line height so the two share one centre line.
+- Not compiled or run on a device.
+
+[0.8.0 beta 28]
+- Top blur follows the web design (PucBloxWeb "pbs"): the same five-blur profile (4/10/20/40/80 px, each solid to a depth and fading out by a deeper one, summed as variances) is turned into the strength of 28 live blur strips; the blur reaches 48 pt below the bar (the web: 72 px). Glass buttons get the soft drop shadow of the web buttons.
+- Not done: the web scales the blur with the scroll position (--sp, no blur at the top of a page); here the blur is always on.
+- Not compiled or run on a device.
+
+[0.8.0 beta 29]
+- Blur only, no colour: the wash layers that a blur view paints over the blurred picture (the "tint" of the Dark/Light style) are switched off on the top strips, the glass buttons and the Material 3 message box (TopBlurStripTint keeps the backdrop that blurs and the content view); the extra colour layers I had added (accent tint in the buttons, light fill in the message box) are gone. The thin edge line of the buttons and the box stays.
+- Note: it relies on the layer names inside UIVisualEffectView ("Backdrop"), so a future iOS could bring the wash back; it is re-applied on every layout.
+- Not compiled or run on a device.
+
+[0.8.0 beta 30]
+- Gooey + menu: the buttons now open in a straight row just above the message box, in line with it (first button right above the +, the row runs along the box; to the left when there is no room on the right; the old fan stays as the fallback when there is no room above the box). The first-version fan code was kept.
+- Smoother and nicer: the blobs, the + blob and the necks share a soft drop shadow (the necks only while they exist), the necks reach 52 pt so the droplet stretches longer before it splits; colours stay on the accent / its contrast colour so they follow the skin.
+- Not compiled or run on a device.
+
+[0.8.0 beta 31]
+- Gooey + menu colours now match the + of the message box when it is closed: the fill is the colour of the box (opaque Theme surface), a thin Theme border, grey icons (secondary text); the accent only marks an action that is switched on (web search: accent icon and ring). The + blob has the same look and turns into the x. The shadow is a little lighter.
+- Not compiled or run on a device.
+
+[0.8.0 beta 32]
+- Performance: the top blur was 28 live blur views over the scrolling page (the lag in Settings/chat). Now 6 strips (same strength profile). The mask I had put on the whole chat web view (a full offscreen pass per frame) is gone; the message box is a real blur so the text going under it needs no fade.
+- Gooey + menu lag (~15 fps): the blobs and the + blob had shadows without a shadow path (offscreen pass per frame each) and the necks had a shadow whose path changes every frame. Shadows now use fixed ovals as shadowPath and the necks have none.
+- Greeting card under the bar: the inset is now also measured from the bottom of the navigation bar in the chat view (not only the safe area), re-sent after every page load (a reload dropped the CSS variables) and written to the diagnostic log ("chat top inset N").
+- Not compiled or run on a device. If it is still slow: the animated gradient wallpaper behind the blurs makes every blur redraw each frame; tell me and I will calm it while a blur is on screen.
+
+[0.8.0 beta 33 - live clock, live web, speed]
+- Live clock: every request (and every automatic continuation) gets a [LIVE CLOCK] block built from the device clock at that moment
+  (weekday, date, time to the second, time zone, ISO 8601, unix time, current year) plus the rule never to answer the date from memory.
+  Nothing is typed into the prompt as a fixed number.
+- Live web: web search is now ON by default (an explicit switch-off is still respected). Claude may use up to 8 searches per reply (was 3);
+  Gemini uses google_search as before. The prompt tells the model to check anything that can change after its training, even small things.
+- Speed: the SSE reader (ClaudeStream, GeminiStream) scans each chunk once and removes the consumed bytes once, instead of shifting the whole
+  buffer once per line. Chat saves (ConversationStore) write to disk on a background serial queue; reads/deletes wait for queued writes, and
+  pending writes are flushed when the app enters the background. The chat page re-renders a streaming reply less often as the reply grows
+  (70 ms up to 400 ms), which removes the slowdown on long answers.
+- Rust core (rust/cmcore, no dependencies, static library for aarch64-apple-ios, linked by build.sh):
+  * office_text.rs replaces src/OfficeText.c (deleted): .docx / .pptx / source-ZIP text extraction, same limits, same output, same error
+    codes. zlib is no longer used: rust/cmcore/src/inflate.rs is a pure Rust DEFLATE decoder. OfficeText.h keeps the error codes and now
+    pulls the declarations from the new src/cmcore.h, so AttachmentStore.m is unchanged.
+  * docx_build.rs replaces the XML / ZIP / CRC-32 code in OfficeExport.m (writing the temp file stays in Objective-C).
+  * sse.rs frames the Claude and Gemini streams: ClaudeStream.m / GeminiStream.m ask the core which bytes are complete lines and get back
+    only the JSON payload of each "data:" line (no NSString per line); the rest of the stream code is unchanged.
+  * build.sh builds the crate first (cargo, target aarch64-apple-ios, IPHONEOS_DEPLOYMENT_TARGET 12.0) and links libcmcore.a (-liconv
+    -lresolv instead of -lz). .github/workflows/build.yml installs the Rust target and runs the core's unit tests (cargo test, does not
+    block the build).
+  * Left in Objective-C on purpose: everything that is UIKit, WebKit, NSUserDefaults, NSURLSession or Keychain based (all the view
+    controllers, Theme, Material, FontStyle, GooFanView, AppSettings, KeyStore, KeyTier, ModelStore, the Claude/Gemini clients and the
+    stream state machines, ConversationStore, AttachmentStore, UpdateManager, GoogleAuth, DevAccess). They only call the Rust core.
+- Not compiled or run on a device, and the Rust code has not been compiled either (no Rust toolchain was available where it was written):
+  the first CI run is the first build. If cargo reports an error, send the message and it gets fixed.

@@ -16,12 +16,14 @@ static NSString *const kRevokeEndpoint = @"https://oauth2.googleapis.com/revoke"
 
 // Scopes the Gemini API documents for OAuth (ai.google.dev "Authentication with OAuth quickstart").
 static NSString *const kScopes =
-    @"openid email https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever";
+    @"openid email profile https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/generative-language.retriever";
 
 static NSString *const kDefClientID    = @"googleOAuthClientID";
 static NSString *const kDefProjectID   = @"googleOAuthProjectID";
 static NSString *const kDefEmail       = @"googleOAuthEmail";
 static NSString *const kDefSignedIn    = @"googleOAuthSignedIn";
+static NSString *const kDefName        = @"googleOAuthName";
+static NSString *const kDefPicture     = @"googleOAuthPicture";
 static NSString *const kDefPrefer      = @"geminiPrefersGoogle";
 static NSString *const kRefreshSecret  = @"google-refresh-token";
 static NSString *const kClientSuffix   = @".apps.googleusercontent.com";
@@ -88,14 +90,30 @@ static NSError *AuthError(GoogleAuthErrorCode code, NSString *message) {
                            userInfo:@{ NSLocalizedDescriptionKey: message ?: @"" }];
 }
 
-static NSString *EmailFromIDToken(NSString *idToken) {
+// The claims of an ID token (the payload is only read, not verified: it came straight from Google's token endpoint over TLS).
+static NSDictionary *ClaimsFromIDToken(NSString *idToken) {
     NSArray *parts = [idToken componentsSeparatedByString:@"."];
-    if (parts.count < 2) return @"";
+    if (parts.count < 2) return @{};
     NSData *payload = DataFromBase64URL(parts[1]);
     id json = payload.length ? [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil] : nil;
-    NSString *email = [json isKindOfClass:[NSDictionary class]] ? json[@"email"] : nil;
+    return [json isKindOfClass:[NSDictionary class]] ? json : @{};
+}
+
+static NSString *EmailFromIDToken(NSString *idToken) {
+    NSString *email = ClaimsFromIDToken(idToken)[@"email"];
     return [email isKindOfClass:[NSString class]] ? email : @"";
 }
+
+// Where the profile picture is kept (Application Support, so the system does not clear it like a cache).
+static NSString *AvatarPath(void) {
+    NSString *dir = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
+    if (dir.length == 0) return nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    return [dir stringByAppendingPathComponent:@"google-avatar.png"];
+}
+
+static UIImage *gAvatarImage;      // in memory copy (main thread)
+static BOOL gProfileRefreshed;     // the profile was asked for once in this launch
 
 #pragma mark - Presentation anchor (iOS 13+)
 
@@ -128,6 +146,89 @@ static NSMutableArray *gWaiters;   // blocks waiting for the refresh that is in 
 
 + (BOOL)isSignedIn { return [[NSUserDefaults standardUserDefaults] boolForKey:kDefSignedIn]; }
 + (NSString *)accountEmail { return [[NSUserDefaults standardUserDefaults] stringForKey:kDefEmail] ?: @""; }
++ (NSString *)accountName { return [[NSUserDefaults standardUserDefaults] stringForKey:kDefName] ?: @""; }
+
+#pragma mark - Profile (name and picture)
+
++ (UIImage *)accountAvatar {
+    if (![self isSignedIn]) return nil;
+    if (!gAvatarImage) {
+        NSString *path = AvatarPath();
+        UIImage *image = path.length ? [UIImage imageWithContentsOfFile:path] : nil;
+        gAvatarImage = image;
+    }
+    return gAvatarImage;
+}
+
+// A larger picture than the default 96 px one: Google picture URLs end in "=s96-c".
+static NSURL *LargerPictureURL(NSString *picture) {
+    if (picture.length == 0) return nil;
+    NSRange range = [picture rangeOfString:@"=s[0-9]+-c" options:NSRegularExpressionSearch | NSBackwardsSearch];
+    NSString *url = range.location != NSNotFound ? [picture stringByReplacingCharactersInRange:range withString:@"=s400-c"] : picture;
+    NSURL *result = [NSURL URLWithString:url];
+    return [result.scheme isEqualToString:@"https"] ? result : nil;
+}
+
++ (void)downloadAvatarFrom:(NSString *)picture {
+    NSURL *url = LargerPictureURL(picture);
+    if (!url) return;
+    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+        UIImage *image = (error == nil && status == 200 && data.length > 0 && data.length < 4 * 1024 * 1024) ? [UIImage imageWithData:data] : nil;
+        if (!image) return;
+        NSData *png = UIImagePNGRepresentation(image);
+        NSString *path = AvatarPath();
+        if (png.length > 0 && path.length > 0) [png writeToFile:path atomically:YES];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (![GoogleAuth isSignedIn]) return;   // signed out meanwhile
+            gAvatarImage = image;
+            [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
+        });
+    }] resume];
+}
+
+// Saves the name and picture of the account (from the ID token at sign-in, or from the userinfo call) and fetches the picture.
++ (void)storeProfileName:(NSString *)name picture:(NSString *)picture {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL changed = NO;
+    if ([name isKindOfClass:[NSString class]] && name.length > 0 && ![name isEqualToString:[self accountName]]) { [defaults setObject:name forKey:kDefName]; changed = YES; }
+    BOOL pictureChanged = NO;
+    if ([picture isKindOfClass:[NSString class]] && picture.length > 0 && ![picture isEqualToString:[defaults stringForKey:kDefPicture]]) {
+        [defaults setObject:picture forKey:kDefPicture];
+        pictureChanged = YES;
+    }
+    [defaults synchronize];
+    if (changed) [[NSNotificationCenter defaultCenter] postNotificationName:kNotifKeyChanged object:nil];
+    if (pictureChanged || (picture.length > 0 && ![self accountAvatar])) [self downloadAvatarFrom:picture];
+}
+
+// For an account that signed in before the name and the picture were requested, or when the picture is missing: asks
+// Google once per launch (needs the "profile" scope, which a new sign-in grants).
++ (void)refreshProfileIfNeeded {
+    if (![self isSignedIn] || gProfileRefreshed) return;
+    if ([self accountName].length > 0 && [self accountAvatar]) return;
+    gProfileRefreshed = YES;
+    [self accessTokenWithCompletion:^(NSString *token, NSError *error) {
+        if (token.length == 0) return;
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://openidconnect.googleapis.com/v1/userinfo"]];
+        [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+        request.timeoutInterval = 20;
+        [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *err) {
+            NSInteger status = [response isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)response statusCode] : 0;
+            id json = (err == nil && status == 200 && data.length) ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            if (![json isKindOfClass:[NSDictionary class]]) return;
+            NSDictionary *info = json;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (![GoogleAuth isSignedIn]) return;
+                NSString *email = info[@"email"];
+                if ([email isKindOfClass:[NSString class]] && email.length > 0 && [self accountEmail].length == 0) {
+                    [[NSUserDefaults standardUserDefaults] setObject:email forKey:kDefEmail];
+                }
+                [self storeProfileName:info[@"name"] picture:info[@"picture"]];
+            });
+        }] resume];
+    }];
+}
 + (NSString *)builtInClientID { return kBuiltInClientID; }
 + (NSString *)savedClientID {
     NSString *saved = [[NSUserDefaults standardUserDefaults] stringForKey:kDefClientID];
@@ -278,6 +379,11 @@ static NSMutableArray *gWaiters;   // blocks waiting for the refresh that is in 
             [defaults setObject:clientID forKey:kDefClientID];
             [defaults setObject:projectID forKey:kDefProjectID];
             [defaults setObject:EmailFromIDToken(body[@"id_token"]) forKey:kDefEmail];
+            NSDictionary *claims = ClaimsFromIDToken(body[@"id_token"]);
+            [defaults removeObjectForKey:kDefName];       // a new account must not keep the old name and picture
+            [defaults removeObjectForKey:kDefPicture];
+            gAvatarImage = nil;
+            { NSString *old = AvatarPath(); if (old.length) [[NSFileManager defaultManager] removeItemAtPath:old error:nil]; }
             [defaults setBool:YES forKey:kDefSignedIn];
             [defaults setBool:YES forKey:kDefPrefer];
             [defaults synchronize];
@@ -287,19 +393,14 @@ static NSMutableArray *gWaiters;   // blocks waiting for the refresh that is in 
             gAccessExpiry = [NSDate dateWithTimeIntervalSinceNow:MAX(60.0, lifetime)];
             [KeyTier invalidateGeminiDetection];
             [DiagnosticLog log:@"google sign-in OK"];
+            gProfileRefreshed = NO;
+            [self storeProfileName:claims[@"name"] picture:claims[@"picture"]];   // the avatar and the name arrive by themselves
             completion(YES, nil);
         });
     }] resume];
 }
 
 #pragma mark - Sign out
-
-+ (void)discardAccessToken {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        gAccessToken = nil;
-        gAccessExpiry = nil;
-    });
-}
 
 + (void)signOut {
     NSString *refresh = [KeyStore loadSecretNamed:kRefreshSecret];
@@ -317,10 +418,16 @@ static NSMutableArray *gWaiters;   // blocks waiting for the refresh that is in 
     [defaults setBool:NO forKey:kDefSignedIn];
     [defaults setBool:NO forKey:kDefPrefer];
     [defaults removeObjectForKey:kDefEmail];
+    [defaults removeObjectForKey:kDefName];
+    [defaults removeObjectForKey:kDefPicture];
     [defaults synchronize];
+    NSString *avatarFile = AvatarPath();
+    if (avatarFile.length) [[NSFileManager defaultManager] removeItemAtPath:avatarFile error:nil];
     dispatch_async(dispatch_get_main_queue(), ^{
         gAccessToken = nil;
         gAccessExpiry = nil;
+        gAvatarImage = nil;
+        gProfileRefreshed = NO;
     });
     [KeyTier invalidateGeminiDetection];
 }

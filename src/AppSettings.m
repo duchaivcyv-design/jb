@@ -8,7 +8,7 @@ static NSString *const kMaxOutputTokensKey = @"maxOutputTokens";
 static NSString *const kContextLimitCharsKey = @"contextLimitChars";
 static NSString *const kReasoningLevelKey = @"reasoningLevel";
 static NSString *const kFastModeKey = @"fastMode";
-static NSString *const kWebSearchKey = @"webSearchEnabledV2";   // V2: search is on by default (V1 defaulted to off)
+static NSString *const kWebSearchKey = @"webSearchEnabled";
 static NSString *const kDailyUsageKey = @"dailyTokenUsage";
 static NSString *const kDailyDateKey = @"dailyTokenUsageDate";
 static NSString *const kDailyBudgetKey = @"dailyTokenBudget";
@@ -277,8 +277,10 @@ static NSArray<NSDictionary *> *PromptChunkRecords(NSString *prompt) {
 + (BOOL)fastModeEnabled { return [[NSUserDefaults standardUserDefaults] boolForKey:kFastModeKey]; }
 + (void)setFastModeEnabled:(BOOL)enabled { [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kFastModeKey]; }
 + (BOOL)webSearchEnabled {
-    id stored = [[NSUserDefaults standardUserDefaults] objectForKey:kWebSearchKey];
-    return stored ? [stored boolValue] : YES;
+    // On by default: the model must always be able to look up live information. Only an explicit switch-off is kept.
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    if ([defaults objectForKey:kWebSearchKey] == nil) return YES;
+    return [defaults boolForKey:kWebSearchKey];
 }
 + (void)setWebSearchEnabled:(BOOL)enabled { [[NSUserDefaults standardUserDefaults] setBool:enabled forKey:kWebSearchKey]; }
 

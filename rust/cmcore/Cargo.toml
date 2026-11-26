@@ -1,0 +1,16 @@
+[package]
+name = "cmcore"
+version = "0.1.0"
+edition = "2021"
+description = "ClaudeMini core: Office/ZIP text extraction, DOCX export and SSE framing (C ABI, no dependencies)"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

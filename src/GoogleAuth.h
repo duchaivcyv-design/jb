@@ -25,6 +25,9 @@ typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
 // State (cheap: reads NSUserDefaults only).
 + (BOOL)isSignedIn;
 + (NSString *)accountEmail;          // may be empty
++ (NSString *)accountName;           // the Google display name; may be empty (accounts that signed in before it was requested)
++ (UIImage *)accountAvatar;          // the profile picture (kept on the device); nil when signed out or not fetched yet
++ (void)refreshProfileIfNeeded;      // asks Google once per launch for a missing name or picture; posts kNotifKeyChanged when it changes
 + (NSString *)builtInClientID;      // client ID compiled into the app (empty = ask the person to paste one)
 + (NSString *)savedClientID;       // the pasted/last used one, else the built-in one
 + (NSString *)savedProjectID;
@@ -40,8 +43,6 @@ typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
 
 // Forgets the session on this device (and asks Google to revoke the refresh token, best effort).
 + (void)signOut;
-// Drops the cached access token so the next request fetches a new one (used when Google answers 401/403).
-+ (void)discardAccessToken;
 
 // A valid access token, refreshed when needed. Completion runs on the main queue; error is non-nil when token is nil.
 + (void)accessTokenWithCompletion:(void (^)(NSString *token, NSError *error))completion;
