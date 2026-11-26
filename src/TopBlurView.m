@@ -15,7 +15,10 @@ void TopBlurStripTint(UIVisualEffectView *view) {
 
 // Sử dụng System Material để có độ "sâu" và "bóng" giống kính của iOS 26
 static UIBlurEffect *CurrentBlur(void) {
-    return [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleSystemUltraThinMaterialDark : UIBlurEffectStyleSystemUltraThinMaterialLight];
+    if ([Theme darkMode]) {
+        return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialDark]; // hoặc SystemChromeMaterialDark
+    }
+    return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialLight];
 }
 
 #pragma mark - Progressive Blur
@@ -63,7 +66,7 @@ static UIBlurEffect *CurrentBlur(void) {
             (id)[UIColor blackColor].CGColor,
             (id)[UIColor clearColor].CGColor
         ];
-        _fadeMaskLayer.locations = @[@0.0, @0.30, @1.0];
+        _fadeMaskLayer.locations = @[@0.0, @0.45, @1.0];
         _blurView.layer.mask = _fadeMaskLayer;
 
         TopBlurStripTint(_blurView);
