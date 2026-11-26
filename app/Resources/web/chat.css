@@ -229,7 +229,7 @@ body {
 .empty {
   /* Pinned to the top of the page in pixels: the keyboard shrinks the page, and the greeting must not move. */
   position: fixed;
-  top: calc(29px + var(--top, 0px));   /* below the see-through bar */
+  top: calc(110px + var(--top, 0px));   /* <-- ĐÃ SỬA: Đẩy xuống dưới */
   left: 0;
   right: 0;
   margin: 0 auto;
@@ -237,6 +237,9 @@ body {
   max-width: 728px;
   box-sizing: border-box;
   text-align: center;
+  background: transparent !important;   /* <-- ĐÃ SỬA: Xoá nền xám */
+  box-shadow: none !important;          /* <-- ĐÃ SỬA: Xoá bóng */
+  border: none !important;              /* <-- ĐÃ SỬA: Xoá viền */
   -webkit-transform: translateZ(0);
   transform: translateZ(0);
   -webkit-transition: opacity .28s ease, -webkit-transform .32s cubic-bezier(.2,.8,.2,1);
@@ -244,6 +247,15 @@ body {
   -webkit-animation: emptyIn .38s ease-out backwards;
   animation: emptyIn .38s ease-out backwards;
 }
+
+/* <-- THÊM MỚI: Đảm bảo các div con bên trong cũng mất nền -->
+.empty > div, .empty > div > div {
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
 /* The history drawer slides the whole chat sideways; the greeting card shrinks back a little while it moves. */
 html.drawer-open .empty { opacity: .5; -webkit-transform: scale(.94) translateZ(0); transform: scale(.94) translateZ(0); }
 @-webkit-keyframes emptyIn { from { opacity: 0; -webkit-transform: translateY(10px) scale(.97); } to { opacity: 1; -webkit-transform: none; } }
