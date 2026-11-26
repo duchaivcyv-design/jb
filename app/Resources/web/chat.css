@@ -1,9 +1,20 @@
 /* Skin variables. Defaults = the original Claude look; the app injects the chosen skin in <style id="themevars"> after this sheet. */
 :root {
+  /* --- MÀU GIAO DIỆN GỐC (GIỮ NGUYÊN) --- */
   --bg: #FAF9F5; --text: #29261B; --sec: #6F6B5E; --border: #E3E0D5; --sel: #F0EEE6; --bubble: #F0EEE6;
-  --accent: #C96442; --onaccent: #FFFFFF; --link: #C96442; --card: rgba(255,255,255,.9); --code-bg: #F6F4EC;
+  --accent: #C96442; --onaccent: #FFFFFF; --link: #C96442; --card: rgba(255,255,255,.9);
+  
+  /* --- MÀU CODE GITHUB LIGHT MODE (ĐÃ SỬA) --- */
+  --code-bg: #F6F8FA;  /* Nền code xám nhạt */
+  --hl-kw: #CF222E;    /* Đỏ: từ khóa */
+  --hl-str: #0A3069;   /* Xanh đậm: chuỗi */
+  --hl-com: #6E7781;   /* Xám: comment */
+  --hl-num: #0550AE;   /* Xanh dương: số */
+  --hl-title: #8250DF; /* Tím: tên hàm, class */
+  --hl-attr: #953800;  /* Cam: thuộc tính */
+  
+  /* --- CÁC BIẾN CÒN LẠI (GIỮ NGUYÊN) --- */
   --err-bg: #FCEDEA; --err-border: #EBC4BB; --err-text: #8F2F1D; --toast-bg: #29261B; --toast-fg: #FFFFFF;
-  --hl-kw: #A5472B; --hl-str: #3F7D58; --hl-com: #8A8677; --hl-num: #2F6B8C; --hl-title: #7B4FA2; --hl-attr: #B0731A;
   --uiscale: 1;
   --serif: Georgia, "Times New Roman", serif;
   --ui-font: -apple-system, "Helvetica Neue", Helvetica, sans-serif;
@@ -365,8 +376,8 @@ html.is-empty, html.is-empty body { overflow: hidden; height: 100%; overscroll-b
 .md .codeblock {
   margin: .9em 0;
   background: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: calc(10px * var(--uiscale));
+  border: 1px solid #D0D7DE; /* Đã đổi sang màu viền GitHub */
+  border-radius: 6px;        /* Bo góc nhỏ giống GitHub */
   overflow: hidden;
 }
 .md .codehead {
@@ -377,8 +388,8 @@ html.is-empty, html.is-empty body { overflow: hidden; height: 100%; overscroll-b
   -webkit-align-items: center;
   align-items: center;
   padding: calc(5px * var(--uiscale)) calc(8px * var(--uiscale)) calc(5px * var(--uiscale)) calc(12px * var(--uiscale));
-  border-bottom: 1px solid var(--border);
-  background: var(--sel);
+  border-bottom: 1px solid #D0D7DE; /* Đã đổi viền dưới */
+  background: var(--code-bg);       /* Đã đổi nền thanh header đồng màu với code */
   font-family: var(--ui-font);
 }
 .md .codehead .lang { font-size: calc(12px * var(--uiscale)); color: var(--sec); text-transform: lowercase; }
