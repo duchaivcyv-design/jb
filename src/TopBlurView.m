@@ -15,7 +15,7 @@ void TopBlurStripTint(UIVisualEffectView *view) {
 
 // Sử dụng System Material để có độ "sâu" và "bóng" giống kính của iOS 26
 static UIBlurEffect *CurrentBlur(void) {
-    return [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleSystemThinMaterialDark : UIBlurEffectStyleSystemThinMaterialLight];
+    return [UIBlurEffect effectWithStyle:[Theme darkMode] ? UIBlurEffectStyleSystemUltraThinMaterialDark : UIBlurEffectStyleSystemUltraThinMaterialLight];
 }
 
 #pragma mark - Progressive Blur
@@ -50,9 +50,21 @@ static UIBlurEffect *CurrentBlur(void) {
         ];
         // FIX LỖI "DÀI QUÁ KHÔNG NGANG MŨI TÊN":
         // 0.0 -> 0.55 là giữ nguyên độ mờ. Từ 0.55 -> 1.0 là bắt đầu mờ dần.
-        // Mày có thể tăng 0.55 lên 0.65 nếu muốn vùng blur ngắn lại nữa.
+        // Có thể tăng 0.55 lên 0.65 nếu muốn vùng blur ngắn lại nữa.
         _fadeMaskLayer.locations = @[@0.0, @0.55, @1.0]; 
         _blurView.layer.mask = _fadeMaskLayer;
+
+        // 3. Viền highlight mảnh ở cạnh dưới
+        UIView *highlight = [[UIView alloc] init];
+        highlight.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.15];
+        highlight.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:highlight];
+        [NSLayoutConstraint activateConstraints:@[
+            [highlight.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [highlight.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [highlight.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [highlight.heightAnchor constraintEqualToConstant:0.5]
+        ]];
         
         [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(rebuild) name:UIApplicationDidBecomeActiveNotification object:nil];
     }
