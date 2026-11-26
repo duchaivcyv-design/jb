@@ -22,8 +22,10 @@ static UIBlurEffect *CurrentBlur(void) {
 
 @interface TopBlurView ()
 @property (strong, nonatomic) UIVisualEffectView *blurView;
+@property (strong, nonatomic) UIView *glassTintView;
 @property (strong, nonatomic) CAGradientLayer *fadeMaskLayer;
 @property (assign, nonatomic) BOOL darkBuilt;
+- (void)applyGlassAppearance;
 @end
 
 @implementation TopBlurView
@@ -34,41 +36,55 @@ static UIBlurEffect *CurrentBlur(void) {
         self.userInteractionEnabled = NO;
         self.backgroundColor = [UIColor clearColor];
         self.clipsToBounds = YES;
-        
-        // 1. Dùng 1 lớp Blur duy nhất để triệt tiêu lỗi "tách từng tầng" và "lỗi pixel"
+        self.darkBuilt = [Theme darkMode];
+
+        // 1. Một lớp UIVisualEffectView duy nhất để tránh tách tầng và vỡ pixel
         _blurView = [[UIVisualEffectView alloc] initWithEffect:CurrentBlur()];
         _blurView.userInteractionEnabled = NO;
-        _blurView.contentScaleFactor = [UIScreen mainScreen].scale; // Fix răng cưa/pixel
+        _blurView.contentScaleFactor = [UIScreen mainScreen].scale;
         [self addSubview:_blurView];
-        
-        // 2. Dùng Gradient Mask để làm mờ dần (Progressive Fade)
+
+        // 2. Lớp tint tối/theo màu nằm trong contentView để đi theo gradient mask
+        _glassTintView = [[UIView alloc] init];
+        _glassTintView.userInteractionEnabled = NO;
+        _glassTintView.translatesAutoresizingMaskIntoConstraints = NO;
+        [_blurView.contentView addSubview:_glassTintView];
+        [NSLayoutConstraint activateConstraints:@[
+            [_glassTintView.topAnchor constraintEqualToAnchor:_blurView.contentView.topAnchor],
+            [_glassTintView.bottomAnchor constraintEqualToAnchor:_blurView.contentView.bottomAnchor],
+            [_glassTintView.leadingAnchor constraintEqualToAnchor:_blurView.contentView.leadingAnchor],
+            [_glassTintView.trailingAnchor constraintEqualToAnchor:_blurView.contentView.trailingAnchor],
+        ]];
+
+        // 3. Gradient Mask mờ dần từ trên xuống, không có đường kẻ ngang
         _fadeMaskLayer = [CAGradientLayer layer];
         _fadeMaskLayer.colors = @[
-            (id)[UIColor blackColor].CGColor,    // Trên cùng: Đặc (Hiện blur)
-            (id)[UIColor blackColor].CGColor,    
-            (id)[UIColor clearColor].CGColor     // Dưới cùng: Trong suốt (Mất blur)
+            (id)[UIColor blackColor].CGColor,
+            (id)[UIColor blackColor].CGColor,
+            (id)[UIColor clearColor].CGColor
         ];
-        // FIX LỖI "DÀI QUÁ KHÔNG NGANG MŨI TÊN":
-        // 0.0 -> 0.55 là giữ nguyên độ mờ. Từ 0.55 -> 1.0 là bắt đầu mờ dần.
-        // Có thể tăng 0.55 lên 0.65 nếu muốn vùng blur ngắn lại nữa.
-        _fadeMaskLayer.locations = @[@0.0, @0.55, @1.0]; 
+        _fadeMaskLayer.locations = @[@0.0, @0.30, @1.0];
         _blurView.layer.mask = _fadeMaskLayer;
 
-        // 3. Viền highlight mảnh ở cạnh dưới
-        UIView *highlight = [[UIView alloc] init];
-        highlight.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.15];
-        highlight.translatesAutoresizingMaskIntoConstraints = NO;
-        [self addSubview:highlight];
-        [NSLayoutConstraint activateConstraints:@[
-            [highlight.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-            [highlight.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-            [highlight.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-            [highlight.heightAnchor constraintEqualToConstant:0.5]
-        ]];
-        
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(rebuild) name:UIApplicationDidBecomeActiveNotification object:nil];
+        TopBlurStripTint(_blurView);
+        [self applyGlassAppearance];
+
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(rebuild)
+                                                     name:UIApplicationDidBecomeActiveNotification
+                                                   object:nil];
     }
     return self;
+}
+
+- (void)applyGlassAppearance {
+    BOOL isDark = [Theme darkMode];
+    _blurView.effect = CurrentBlur();
+    _blurView.contentScaleFactor = [UIScreen mainScreen].scale;
+
+    _glassTintView.backgroundColor = isDark
+        ? [UIColor colorWithWhite:0.0 alpha:0.22]
+        : [UIColor colorWithWhite:1.0 alpha:0.12];
 }
 
 - (void)dealloc {
@@ -84,27 +100,32 @@ static UIBlurEffect *CurrentBlur(void) {
 
 - (void)didMoveToWindow {
     [super didMoveToWindow];
-    if (self.window) [self rebuild];
+    if (self.window && self.darkBuilt != [Theme darkMode]) {
+        [self rebuild];
+    }
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    
-    if (self.darkBuilt != [Theme darkMode]) { [self rebuild]; }
-    
+
+    if (self.darkBuilt != [Theme darkMode]) {
+        [self rebuild];
+        return;
+    }
+
     // Ép lớp blur phủ kín toàn bộ view
     self.blurView.frame = self.bounds;
-    
+
     // Tắt animation ngầm của lớp Mask để khi vuốt (scroll) không bị giật lag
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     self.fadeMaskLayer.frame = self.bounds;
     [CATransaction commit];
-    
-    TopBlurStripTint(self.blurView);
 }
 
-- (void)refreshStyle { [self rebuild]; }
+- (void)refreshStyle {
+    [self rebuild];
+}
 
 @end
 
