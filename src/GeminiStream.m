@@ -1,4 +1,4 @@
-#import "cmcore.h"
+#include <string.h>
 #import "GeminiStream.h"
 #import "AppSettings.h"
 #import "ModelStore.h"
@@ -33,7 +33,6 @@
 @property (assign, nonatomic) BOOL stallFired;
 @property (assign, nonatomic) NSInteger stallRetryCount;
 @property (strong, nonatomic) NSMutableURLRequest *savedRequest;
-- (void)processPayloadData:(NSData *)payload;
 @end
 
 @implementation GeminiStream
@@ -489,27 +488,38 @@ didReceiveResponse:(NSURLResponse *)response
 
 #pragma mark - SSE parsing
 
-// Called by the Rust framer once per "data:" line; the bytes are valid only during the call.
-static void GeminiStreamPayload(void *ctx, const uint8_t *bytes, size_t length) {
-    GeminiStream *stream = (__bridge GeminiStream *)ctx;
-    NSData *payload = [NSData dataWithBytesNoCopy:(void *)bytes length:length freeWhenDone:NO];
-    [stream processPayloadData:payload];
-}
-
 - (void)drainBufferFinal:(BOOL)final {
-    // The Rust core (rust/cmcore) frames the stream: it says how much of the buffer is complete lines and hands back
-    // the JSON payload of each "data:" line. The ready bytes are cut off the buffer first, so callbacks that run
-    // while they are processed see a consistent buffer.
-    NSUInteger ready = cm_sse_complete_len((const uint8_t *)self.buffer.bytes, self.buffer.length, final ? 1 : 0);
-    if (ready == 0) return;
-    NSData *chunk = [self.buffer subdataWithRange:NSMakeRange(0, ready)];
-    if (ready >= self.buffer.length) self.buffer.length = 0;
-    else [self.buffer replaceBytesInRange:NSMakeRange(0, ready) withBytes:NULL length:0];
-    cm_sse_for_each_payload((const uint8_t *)chunk.bytes, chunk.length, 1, GeminiStreamPayload, (__bridge void *)self);
+    // Walks the buffer once with memchr and drops the consumed part at the end (taking a line off the front of the buffer
+    // for every line made a burst of events cost time proportional to its size squared).
+    NSUInteger start = 0;
+    while (!self.finished) {
+        NSUInteger length = self.buffer.length;
+        if (start >= length) break;
+        const uint8_t *bytes = self.buffer.bytes;
+        const uint8_t *newline = memchr(bytes + start, '\n', length - start);
+        if (!newline) break;
+        NSUInteger end = (NSUInteger)(newline - bytes);
+        NSData *lineData = [NSData dataWithBytes:bytes + start length:end - start];
+        start = end + 1;
+        [self processLineData:lineData];
+    }
+    if (start > 0 && start <= self.buffer.length) [self.buffer replaceBytesInRange:NSMakeRange(0, start) withBytes:NULL length:0];
+    if (final && self.buffer.length > 0) {
+        [self processLineData:[self.buffer copy]];
+        self.buffer.length = 0;
+    }
 }
 
-- (void)processPayloadData:(NSData *)payload {
-    id json = [NSJSONSerialization JSONObjectWithData:payload options:0 error:nil];
+- (void)processLineData:(NSData *)lineData {
+    NSString *line = [[NSString alloc] initWithData:lineData encoding:NSUTF8StringEncoding];
+    if (line == nil) return;
+    line = [line stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\r"]];
+    if (![line hasPrefix:@"data:"]) return;
+
+    NSString *payload = [[line substringFromIndex:5] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (payload.length == 0 || [payload isEqualToString:@"[DONE]"]) return;
+
+    id json = [NSJSONSerialization JSONObjectWithData:[payload dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
     if (![json isKindOfClass:[NSDictionary class]]) return;
     [self processChunk:json];
 }

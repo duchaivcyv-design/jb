@@ -517,6 +517,52 @@
     if (!reducedMotion()) { settleStar(th); } else { th.icon.style.animation = 'none'; }
   }
 
+  // Smooth typing: incoming text waits in c.pending and is released in small steps. The step grows with the backlog, so a
+  // burst from the network still catches up quickly while short pieces appear one after another (no stop-and-jump).
+  var PACE_INTERVAL = 22;
+
+  // Re-rendering the whole reply costs more the longer it gets, so long replies are redrawn less often.
+  function renderDelay(len) {
+    return Math.min(1500, Math.max(RENDER_INTERVAL, Math.floor(len / 40)));
+  }
+
+  function renderStreaming(c) {
+    if (current !== c) { return; }
+    if (window.MD && typeof window.MD.setStreaming === 'function') { window.MD.setStreaming(true); }
+    try {
+      renderInto(c.content, c.text);
+    } finally {
+      if (window.MD && typeof window.MD.setStreaming === 'function') { window.MD.setStreaming(false); }
+    }
+    if (stick) { toBottom(false); }
+    updateJump();
+  }
+
+  function scheduleRender(c) {
+    if (!c.rendered) {
+      c.rendered = true;
+      renderStreaming(c);
+    } else if (!c.timer) {
+      c.timer = setTimeout(function () {
+        c.timer = null;
+        renderStreaming(c);
+      }, renderDelay(c.text.length));
+    }
+  }
+
+  function paceStep(c) {
+    c.pacer = setTimeout(function () {
+      c.pacer = null;
+      if (current !== c || !c.pending) { return; }
+      var backlog = c.pending.length;
+      var n = Math.min(400, Math.max(2, Math.ceil(backlog / 8)));
+      c.text += c.pending.slice(0, n);
+      c.pending = c.pending.slice(n);
+      scheduleRender(c);
+      if (c.pending.length) { paceStep(c); }
+    }, PACE_INTERVAL);
+  }
+
   window.ChatUI = {
     setStrings: function (obj) {
       for (var k in obj) {
@@ -584,7 +630,7 @@
       row.appendChild(body);
       row._thinking = th;
       msgsEl.appendChild(row);
-      current = { row: row, body: body, content: content, dot: dot, status: null, text: '', timer: null, rendered: false };
+      current = { row: row, body: body, content: content, dot: dot, status: null, text: '', pending: '', pacer: null, timer: null, rendered: false };
       refreshRegenerate();
       updateJump();
     },
@@ -597,25 +643,11 @@
     },
 
     delta: function (s) {
-      if (!current) { return; }
-      current.text += s;
+      if (!current || !s) { return; }
       var c = current;
-      finishThinking(c.row);
-      if (!c.rendered) {
-        c.rendered = true;
-        renderInto(c.content, c.text);
-        if (stick) { toBottom(false); }
-        updateJump();
-      } else if (!c.timer) {
-        c.timer = setTimeout(function () {
-          c.timer = null;
-          if (current === c) {
-            renderInto(c.content, c.text);
-            if (stick) { toBottom(false); }
-            updateJump();
-          }
-        }, Math.min(400, RENDER_INTERVAL + (c.text.length >> 5)));   // longer reply = fewer full re-renders
-      }
+      finishThinking(c.row);   // the answer started: fold the thoughts away
+      c.pending += s;
+      if (!c.pacer) { paceStep(c); }
     },
 
     end: function (finalText) {
@@ -623,6 +655,8 @@
       var c = current;
       current = null;
       if (c.timer) { clearTimeout(c.timer); c.timer = null; }
+      if (c.pacer) { clearTimeout(c.pacer); c.pacer = null; }
+      if (c.pending) { c.text += c.pending; c.pending = ''; }
       if (c.dot.parentNode) { c.dot.parentNode.removeChild(c.dot); }
       c.row._streaming = false;
       var text = (finalText !== undefined && finalText !== null && finalText !== '') ? finalText : c.text;

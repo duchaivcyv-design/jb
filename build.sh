@@ -27,29 +27,47 @@ mkdir -p "$APPDIR" "$DIST"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 echo "SDK: $SDK"
 
-echo "==> Building the Rust core (aarch64-apple-ios, iOS 12.0+)"
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "cargo not found: install Rust first (https://rustup.rs)" >&2
-  exit 1
-fi
-rustup target add aarch64-apple-ios >/dev/null 2>&1 || true
-export IPHONEOS_DEPLOYMENT_TARGET=12.0
-cargo build --release --manifest-path rust/cmcore/Cargo.toml --target aarch64-apple-ios
-RUST_LIB="rust/cmcore/target/aarch64-apple-ios/release/libcmcore.a"
-if [ ! -f "$RUST_LIB" ]; then
-  echo "missing $RUST_LIB" >&2
-  exit 1
+# Rust core (core/): hot paths that do not touch UIKit. It is optional: if Rust is missing, fails to build, or fails to link,
+# the same functions are compiled from their Objective-C versions and the app behaves the same.
+RUST_LIB=""
+if [ -d core ] && command -v cargo >/dev/null 2>&1; then
+  echo "==> Building the Rust core (iOS arm64)"
+  rustup target add aarch64-apple-ios >/dev/null 2>&1 || true
+  if IPHONEOS_DEPLOYMENT_TARGET=12.0 cargo build --release --lib --target aarch64-apple-ios --manifest-path core/Cargo.toml; then
+    RUST_LIB="core/target/aarch64-apple-ios/release/libclaudemini_core.a"
+    [ -f "$RUST_LIB" ] || RUST_LIB=""
+  else
+    echo "WARNING: the Rust core did not build; using the Objective-C versions"
+  fi
+else
+  echo "==> Rust core skipped (cargo not found); using the Objective-C versions"
 fi
 
+compile_app() {   # $1 = 1 to link the Rust core, 0 to use the Objective-C fallbacks
+  local extra=()
+  if [ "$1" = "1" ]; then extra=(-DCM_USE_RUST=1 -Icore/include "$RUST_LIB"); else extra=(-DCM_USE_RUST=0); fi
+  xcrun --sdk iphoneos clang \
+    -arch arm64 \
+    -miphoneos-version-min=12.0 \
+    -isysroot "$SDK" \
+    -fobjc-arc -fmodules -O2 -Wall -Wno-deprecated-declarations \
+    "${extra[@]}" \
+    src/*.m src/*.c \
+    -framework UIKit -framework Foundation -framework Security -framework AuthenticationServices -framework WebKit -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreText -lz \
+    -o "$APPDIR/$APP"
+}
+
 echo "==> Compiling (arm64, iOS 12.0+)"
-xcrun --sdk iphoneos clang \
-  -arch arm64 \
-  -miphoneos-version-min=12.0 \
-  -isysroot "$SDK" \
-  -fobjc-arc -fmodules -O2 -Wall -Wno-deprecated-declarations \
-  src/*.m "$RUST_LIB" \
-  -framework UIKit -framework Foundation -framework Security -framework AuthenticationServices -framework WebKit -framework ImageIO -framework AVFoundation -framework CoreMedia -framework CoreText -liconv -lresolv \
-  -o "$APPDIR/$APP"
+if [ -n "$RUST_LIB" ]; then
+  if compile_app 1; then
+    echo "Rust core linked"
+  else
+    echo "WARNING: linking the Rust core failed; building with the Objective-C versions"
+    compile_app 0
+  fi
+else
+  compile_app 0
+fi
 
 echo "==> Compiling the icon helper (setuid root in the .deb only)"
 xcrun --sdk iphoneos clang \

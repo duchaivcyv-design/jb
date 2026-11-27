@@ -1,3 +1,25 @@
+ClaudeMini 0.8.0-33 (beta): live time and web, stutter, Rust core
+Live date, time and web
+- The date and time are not typed in: every message carries the time read from the internet-synced clock (new TimeSync:
+  asks google.com / cloudflare.com / apple.com for their Date header at launch, when the app comes back, and every 10 min),
+  with date, hour, minute and second, so a wrong phone clock or a long chat never leaves the model with a stale date.
+- The model is told never to answer today's date/year/time from memory and never to give an earlier year.
+- Web search is ON by default (new setting key; the search button still turns it off) and the instruction now says to search
+  first for anything that can change, even small details, without waiting to be asked.
+Stutter
+- Smooth typing of the answer (steps grow with the backlog, so bursts catch up without stopping), long replies are redrawn
+  less often, a growing code block is not re-highlighted/cached on every redraw (cost grew with the square of the reply).
+- The reply stream is split into lines with one memchr pass instead of cutting each line off the front of the buffer.
+Rust core (core/, optional)
+- core/ builds libclaudemini_core.a (std only, no crates). Two hot paths run in it: the JavaScript string built for every piece
+  of a streaming reply (cm_js_string_literal) and the choice of which parts of a very long instruction text fit the character
+  budget (cm_prompt_select: 2.2 million characters in about 10 ms in the host test). 16 unit tests + a 3000-case fuzz of the
+  JS string against Node pass on the host.
+- build.sh builds it for aarch64-apple-ios when cargo exists. If Rust is missing, does not build or does not link, the same
+  functions are compiled from the Objective-C code (CMNative.m falls back), so the app behaves the same.
+- The UI (UIKit/WebKit) and the Objective-C versions of the replaced code are kept: Rust cannot replace Apple's frameworks and
+  the fallback needs the old code.
+
 ClaudeMini 0.7.4-1 (beta)
 
 Chat:
@@ -238,29 +260,3 @@ Sua khoa developer (beta): bo 50 ma skip; chi co 1 mat khau duy nhat. Sai 15 lan
 - Gooey + menu lag (~15 fps): the blobs and the + blob had shadows without a shadow path (offscreen pass per frame each) and the necks had a shadow whose path changes every frame. Shadows now use fixed ovals as shadowPath and the necks have none.
 - Greeting card under the bar: the inset is now also measured from the bottom of the navigation bar in the chat view (not only the safe area), re-sent after every page load (a reload dropped the CSS variables) and written to the diagnostic log ("chat top inset N").
 - Not compiled or run on a device. If it is still slow: the animated gradient wallpaper behind the blurs makes every blur redraw each frame; tell me and I will calm it while a blur is on screen.
-
-[0.8.0 beta 33 - live clock, live web, speed]
-- Live clock: every request (and every automatic continuation) gets a [LIVE CLOCK] block built from the device clock at that moment
-  (weekday, date, time to the second, time zone, ISO 8601, unix time, current year) plus the rule never to answer the date from memory.
-  Nothing is typed into the prompt as a fixed number.
-- Live web: web search is now ON by default (an explicit switch-off is still respected). Claude may use up to 8 searches per reply (was 3);
-  Gemini uses google_search as before. The prompt tells the model to check anything that can change after its training, even small things.
-- Speed: the SSE reader (ClaudeStream, GeminiStream) scans each chunk once and removes the consumed bytes once, instead of shifting the whole
-  buffer once per line. Chat saves (ConversationStore) write to disk on a background serial queue; reads/deletes wait for queued writes, and
-  pending writes are flushed when the app enters the background. The chat page re-renders a streaming reply less often as the reply grows
-  (70 ms up to 400 ms), which removes the slowdown on long answers.
-- Rust core (rust/cmcore, no dependencies, static library for aarch64-apple-ios, linked by build.sh):
-  * office_text.rs replaces src/OfficeText.c (deleted): .docx / .pptx / source-ZIP text extraction, same limits, same output, same error
-    codes. zlib is no longer used: rust/cmcore/src/inflate.rs is a pure Rust DEFLATE decoder. OfficeText.h keeps the error codes and now
-    pulls the declarations from the new src/cmcore.h, so AttachmentStore.m is unchanged.
-  * docx_build.rs replaces the XML / ZIP / CRC-32 code in OfficeExport.m (writing the temp file stays in Objective-C).
-  * sse.rs frames the Claude and Gemini streams: ClaudeStream.m / GeminiStream.m ask the core which bytes are complete lines and get back
-    only the JSON payload of each "data:" line (no NSString per line); the rest of the stream code is unchanged.
-  * build.sh builds the crate first (cargo, target aarch64-apple-ios, IPHONEOS_DEPLOYMENT_TARGET 12.0) and links libcmcore.a (-liconv
-    -lresolv instead of -lz). .github/workflows/build.yml installs the Rust target and runs the core's unit tests (cargo test, does not
-    block the build).
-  * Left in Objective-C on purpose: everything that is UIKit, WebKit, NSUserDefaults, NSURLSession or Keychain based (all the view
-    controllers, Theme, Material, FontStyle, GooFanView, AppSettings, KeyStore, KeyTier, ModelStore, the Claude/Gemini clients and the
-    stream state machines, ConversationStore, AttachmentStore, UpdateManager, GoogleAuth, DevAccess). They only call the Rust core.
-- Not compiled or run on a device, and the Rust code has not been compiled either (no Rust toolchain was available where it was written):
-  the first CI run is the first build. If cargo reports an error, send the message and it gets fixed.
