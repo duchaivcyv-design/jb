@@ -1,0 +1,18 @@
+Google OAuth integration — merge notes
+
+Base project: ClaudeMini_0.8.0_beta14 (3.5 MB source archive)
+OAuth source: jb-main-patched (1.9 MB source archive)
+
+Integrated:
+- Google OAuth 2.0 authorization-code flow with PKCE, ASWebAuthenticationSession, refresh-token storage, refresh/retry, and sign-out.
+- Preserved API-key storage and verification; Gemini can retain both credentials.
+- Credential selection follows the existing preference behavior: saving an API key selects API-key mode; completing Google sign-in selects Google mode. Signing out of Google leaves a saved API key intact.
+- Added Google sign-in controls to the existing key screen and Google account status in Settings.
+- Routed Gemini model verification, model-list retrieval, and streaming chat requests through the shared credential authorizer.
+- Avoided running API-key tier probes while Google OAuth is the active Gemini credential.
+- Added Google localization strings and linked AuthenticationServices.
+
+Validation:
+- Archive structure and required source/resource references checked.
+- Info.plist parsed successfully; build.sh passes shell syntax validation.
+- A real iOS compile/sign/install test was not possible in this environment because the Apple iOS SDK/Xcode toolchain is unavailable. Build with the repository's build.sh on macOS/Xcode before installing.

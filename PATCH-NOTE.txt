@@ -1,0 +1,288 @@
+ClaudeMini 0.8.0-34 (beta): build fix, 403 recovery, large instructions, typing
+Build
+- src/OfficeText.c held Rust source (a copy of rust/cmcore/src/office_text.rs) and clang tried to compile it as C: removed.
+- The two Rust crates (rust/cmcore and core/) would have put two copies of the Rust runtime into one app: merged into rust/cmcore
+  (core/ removed). build.sh now builds rust/cmcore (required, the app calls it directly) and no longer globs src/*.c.
+HTTP 403 (images/files/models that "hang then 403")
+- A Gemini 403 before any text now goes through the usual causes, one quick retry each, before an error is shown:
+  1) stale Google access token -> fresh one; 2) the model refuses the Google Search tool -> request without it;
+  3) the optional project ID is refused -> request without it; 4) the model is not allowed for this account (preview / paid-only)
+  -> switch to a Gemini model that works (default model first, then Flash) with a short notice; the refused model is
+  remembered for a day. The remaining error still shows Google's own message.
+Large instructions (up to about 1.2 million lines)
+- Stored limit 1,000,000 -> 64,000,000 characters; import limit 16 MB -> 160 MB, read and cleaned in the background with a spinner.
+- What goes into one request is sized by the model (about 2.4 characters per token: roughly 2.5 million characters for a
+  1M-token Gemini model, less for Claude). A text that fits is sent whole; a longer one is cut by whole chunks, those that
+  mention the question first (Rust: 2.2 million characters in about 10 ms). The choice is made once per question, not three times.
+- The instruction screen keeps a very large text whole but shows only the beginning (read-only) so the screen does not freeze;
+  import a file to replace it. The file is read in the background at launch.
+ZIP
+- Source/text ZIP files: up to 48 MB of text (was 4 MB) and 60000 entries; an 88 MB archive is read in about 0.7 s (host test).
+  The text is cleaned in place (no second copy).
+Typing
+- A reply that arrives in one piece, or whose stream ends with text still waiting, is typed out very quickly instead of jumping
+  onto the screen.
+Time: the live-clock instruction now uses the internet-synced clock (TimeSync) instead of the phone clock.
+
+ClaudeMini 0.8.0-33 (beta): live time and web, stutter, Rust core
+Live date, time and web
+- The date and time are not typed in: every message carries the time read from the internet-synced clock (new TimeSync:
+  asks google.com / cloudflare.com / apple.com for their Date header at launch, when the app comes back, and every 10 min),
+  with date, hour, minute and second, so a wrong phone clock or a long chat never leaves the model with a stale date.
+- The model is told never to answer today's date/year/time from memory and never to give an earlier year.
+- Web search is ON by default (new setting key; the search button still turns it off) and the instruction now says to search
+  first for anything that can change, even small details, without waiting to be asked.
+Stutter
+- Smooth typing of the answer (steps grow with the backlog, so bursts catch up without stopping), long replies are redrawn
+  less often, a growing code block is not re-highlighted/cached on every redraw (cost grew with the square of the reply).
+- The reply stream is split into lines with one memchr pass instead of cutting each line off the front of the buffer.
+Rust core (core/, optional)
+- core/ builds libclaudemini_core.a (std only, no crates). Two hot paths run in it: the JavaScript string built for every piece
+  of a streaming reply (cm_js_string_literal) and the choice of which parts of a very long instruction text fit the character
+  budget (cm_prompt_select: 2.2 million characters in about 10 ms in the host test). 16 unit tests + a 3000-case fuzz of the
+  JS string against Node pass on the host.
+- build.sh builds it for aarch64-apple-ios when cargo exists. If Rust is missing, does not build or does not link, the same
+  functions are compiled from the Objective-C code (CMNative.m falls back), so the app behaves the same.
+- The UI (UIKit/WebKit) and the Objective-C versions of the replaced code are kept: Rust cannot replace Apple's frameworks and
+  the fallback needs the old code.
+
+ClaudeMini 0.7.4-1 (beta)
+
+Chat:
+- A reply no longer stops half way: if the connection drops, the stream closes quietly, or the model reaches its length limit,
+  the app keeps the text already received and asks the model to continue (Claude and Gemini).
+- Longer waiting time before a quiet connection counts as dead; the screen does not auto-lock while a reply is written.
+- If iOS restarts the chat page during a reply, the text received so far is drawn again.
+
+Mic:
+- Tap the mic, speak, the words appear in the input box, then press send. Tap the mic again to stop.
+- Voice choice, the Live screen and read-aloud were removed.
+
+Version: 0.7.4-1 (beta revision after the dash is read by the updater).
+
+Bang chon (beta): thay toan bo menu action sheet cua iOS bang pop-up kieu ClaudeMini (ChoicePopupViewController).
+
+Giao dien (beta): them 7 icon che do toi (Default, SideStore, LiveContainer, Dopamine, Chimera, Sileo, Github) ve theo kieu icon toi cua iOS (tools/make_dark_icons.py); man Giao dien gom 3 muc: Icon ung dung (chon Sang/Toi), Theme chat, Mau nhan.
+
+Icon toi (lam lai): tach hinh khoi nen bang do phu chinh xac tung pixel (khong con vien trang), ve lai gradient moi cho tung icon, LiveContainer dung tam nen toi + vien xanh.
+
+Icon toi: mau gradient lay dung tu anh goc (khong tu tao mau); chi nang do sang chung cho Dopamine va Github de khong bi chim vao nen toi.
+
+Hop thoai (beta): thay het UIAlertController (hop thoai xac nhan, thong bao, nhap mat khau dev, doi ten, xoa) bang pop-up ClaudeMini; hop co o nhap tu day len tren ban phim.
+
+Chi dan AI (beta): nut "Nhap tu tep (.clmn hoac .txt)" trong man Chi dan cho AI; mo tep .clmn bang ClaudeMini (Tep, chia se, AirDrop) thi app tu doc va nhap vao chi dan (hoi thay the hoac them vao cuoi neu da co chi dan).
+
+iPhone Duo (beta): bo cuc hai khung (danh sach chat co dinh ben trai, chat ben phai), cho phep xoay ngang, tranh tai tho khi xoay; Cai dat > Giao dien > iPhone Duo: chon Tu dong / Dien thoai / iPhone Duo va do rong khung trai; nut menu tren cung gap/mo khung trai; man key van chi xoay doc.
+
+Cap nhat phan mem (beta): gop 2 muc cap nhat (thuong + developer) thanh mot muc "Cap nhat phan mem" kieu iOS (hai hang: Tu dong cap nhat, Ban cap nhat beta; the co icon, phien ban, dung luong, ghi chu, nut "Cap nhat bay gio"). Kenh developer van sau mat khau; them lop bao mat: ban ghi so lan sai nhan ba ban co chu ky HMAC, chong chinh dong ho (dong ho don dieu), khoa 6 gio/24 gio khi sai nhieu, chan debugger/Frida, moi lan thu mat toi thieu 1,5 giay, khoa lai khi khoa man hinh/roi man cap nhat, kiem tra lai phien o moi buoc kiem tra, tai, cai.
+
+Khoa cap nhat developer (beta): sai 10 lan khoa 1 gio (moi lan sai tiep theo lai khoa 1 gio); trong luc khoa, nhap 1 trong 50 ma skip (chi luu dang hash co muoi, moi ma dung 1 lan) vao o mat khau de bo khoa; loi nhan khi bi khoa doi thanh cau moi; nen cua man cap nhat va hop mat khau developer lam mo (blur) giong nen lich su tro chuyen.
+
+Sua khoa developer (beta): bo 50 ma skip; chi co 1 mat khau duy nhat. Sai 15 lan thi khoa phan cap nhat developer 1 gio (trong luc khoa khong gi mo duoc, ke ca mat khau dung), hien loi nhan "Ai biểu spam cho cố vô, skip thì liên hệ zalo pucpucpuc để lấy key skip". Nen blur ap dung cho moi hop thoai (xac nhan, thong bao, nhap lieu, bang chon, chon model, cap nhat).
+
+[Chat hang fix]
+- GeminiStream/ClaudeStream: watchdog timer (live streams only). No first byte within 45-150 s (Gemini, by model) or 30-45 s (Claude), or silence mid-stream for 60-150 s: the task is cut and, if no text arrived, restarted silently on a fresh connection (max 2 times); otherwise finishes with a Network error so the existing continuation logic keeps the partial reply. Late callbacks of replaced sessions are ignored.
+- Idle timeouts shortened (live 100/160 s, single request 180/360 s).
+
+[Release]
+- Official 0.7.4 (beta 0.7.4-1 promoted).
+
+[Beta update row]
+- Settings > Data has a "Bản cập nhật beta" row again: password prompt, then the usual update pop-up (no separate page). The Software Update page keeps only the automatic-check option and always uses the normal releases.
+- Only one password opens the developer channel (new PBKDF2 verifiers; the password itself is not in the repo). The repository secret DEV_UPDATE_PASSWORD must hold the same password so developer builds are encrypted with it.
+
+[No lock-out]
+- Developer gate: wrong passwords are no longer counted and nothing locks the update section. Old wrong-try counters / one-hour locks stored by earlier builds are wiped on every attempt, so the right password is never refused.
+
+[Material 3 / accent / gradient / fonts]
+- Material.h/.m: tonal row cards (large outer corners, small inner ones), section headers (collapsible in Settings), Material switch, gradient slider with a ring thumb, cookie-shaped mascot, moving gradient view.
+- Appearance > Design style: Classic or Material 3 (Settings rows become cards with circle icons, left-aligned title, folding sections; chat bubbles get rounder shapes).
+- Appearance > Accent colour: new fixed (non-scrolling) page like the reference video: tinted gradient page, preview card with hex and mascot, Hue / Saturation / Brightness sliders, ten ready colours, Default button. The picked colour tints the whole palette (backgrounds, cards, borders, chat). Picking a skin drops the custom colour. Skins moved to Appearance > Chat theme.
+- Chat theme: new wallpaper "Gradient động" (moving gradient built from the accent colour, light or dark).
+- Font page: SF Rounded added (rounded design of the system font, iOS 13+; iOS 12 keeps the normal system font) and a 7-step weight slider. All [UIFont systemFontOfSize:...] go through FontStyle.m (method exchange), the chat web view gets the same font stack and weight.
+- Not compiled or run on a device.
+
+[0.8.0 beta]
+- Bundled SF Pro Rounded (9 weights, app/Resources/Fonts), registered through CoreText; works on iOS 12 too, in the app and in the chat web view.
+- Material 3 now applies to the whole app: pop-ups, model picker, system prompt, software update, chat input and cards (larger corner radii, tonal rows, spring press and ripple, entrance animation of rows).
+- Settings text is smaller and balanced (title 16, detail 13, section header 13).
+- Design, accent colour and font changes apply at once: the chat re-applies radii, font and theme without leaving the page.
+- Not compiled or run on a device.
+
+[0.8.0 beta 2]
+- Font page is now inside a scroll view (the weight slider at the bottom could not be reached) and uses Material 3 card radii.
+- Accent page mascot: turns all the time and morphs from one shape to the next (circle, cookie, clover, burst, soft square, flower, soft triangle, sunny) with a spring; dragging the hue slider morphs it live; it also changes by itself every few seconds.
+- Material slider: thumb swells under the finger and springs back, larger touch area.
+- Not compiled or run on a device.
+
+[0.8.0 beta 3]
+- Settings sections (Giao dien, API Keys, ...) now fold and unfold with an animation: rows fade out / drop in and the chevron springs round.
+- Removed the coloured (accent) flash when touching a row: the selected background is now the plain row colour, the ripple is neutral grey.
+- Not compiled or run on a device.
+
+[0.8.0 beta 4]
+- Font page always has a little extra to scroll (content is at least the screen height + 90 pt, 64 pt under the last card).
+- Not compiled or run on a device.
+
+[0.8.0 beta 5]
+- Font page: removed the min-height constraint that stretched the preview card when scrolling; the extra scroll room is now a bottom content inset (90 pt + home bar), so nothing is resized.
+- Not compiled or run on a device.
+
+[0.8.0 beta 6]
+- Unfolding a Settings section now animates (rows below slide, new rows spring in one by one). Cause of the missing animation: the row count was read from the table view cache (0 while folded) so it fell back to reloadData; it is now read from the data source.
+- Font page: bottom inset also covers the gap when the content is shorter than the screen, so there is always about 100 pt to scroll.
+- Not compiled or run on a device.
+
+[0.8.0 beta 7]
+- Smaller bar titles next to the back button (Material 3: 24 bold -> 19 semibold left titles, 18 -> 16 centered titles).
+- Not compiled or run on a device.
+
+[0.8.0 beta 8]
+- Font page scroll, root cause: the preview card height was open-ended (only >= 170), so the layout could not give the scroll view an exact content height. Now the card height is determined (low-priority 170, grows with its bubbles) and the content is tied to the scroll view contentLayoutGuide / frameLayoutGuide, so the page scrolls to the weight slider.
+- Not compiled or run on a device.
+
+[0.8.0 beta 9]
+- The font choice (SF Rounded) and the weight step now apply only to text created by the app itself. The exchanged UIFont methods check the caller (dladdr on the return address): calls from UIKit and other system code (alerts, keyboard, share sheet, menus) get the untouched system font.
+- Table header/footer labels (made by UIKit) get their font set explicitly.
+- Not compiled or run on a device.
+
+[0.8.0 beta 10]
+- Font page made compact so it fits an iPhone SE (667 pt) without scrolling: font rows 52 -> 46, preview card min 140, smaller gaps, 24 pt under the last card. The scroll view (with about 100 pt of extra room) stays as a second safeguard.
+- Not compiled or run on a device.
+
+[0.8.0 beta 11]
+- Gradient wallpaper redone: instead of one linear gradient whose colours and angle rotate (visible bands), it is now an aurora: a base colour with five large soft radial blobs (hues around the accent) that drift along slow elliptical paths and breathe. Soft in light mode, deep in dark mode; still when Reduce Motion is on.
+- Not compiled or run on a device.
+
+[0.8.0 beta 12]
+- Chat input bar: the corner radius (28 in Material 3) was larger than half of the bar height (46), which bent the ends of the pill into points. The radius is now min(28, height / 2), recomputed on every layout, so the bar is a clean pill and also rounds correctly when it grows to several lines.
+- Same fix for the update button (48 pt) and the system prompt import button (42 pt).
+- Not compiled or run on a device.
+
+[0.8.0 beta 13]
+- One set of Material 3 motion tokens in Material.h/.m: duration tokens (50..500 ms), easing curves (emphasized decelerate 0.05/0.7/0.1/1, emphasized accelerate 0.3/0/0.8/0.15, standard 0.2/0/0/1) and the Expressive springs (spatial fast 0.6/800, default 0.8/380, slow 0.8/200; effects 1.0/3800, 1.0/1600, 1.0/800), converted to CASpringAnimation (damping = 2 * zeta * sqrt(k)) and UIView springs whose duration is the settling time. Sources: material-components-android Motion.md, Compose MotionScheme and the open-source ports; the two sources disagree on some transition lengths, the choice is 400 ms enter / 200 ms exit.
+- Every existing Material animation now uses these tokens (card press, button press, switch, slider, thumb, section fold/unfold, row entrance).
+- New: dialogs (confirm, update, model, choice) grow from 0.9 on the spatial spring, fade in on the effects spring and shrink + fade out in 150 ms; the tool menu grows from 0.85; the history drawer opens with emphasized decelerate (400 ms) and closes with emphasized accelerate (250 ms); layout changes and the first chat reveal use the same tokens.
+- New: screen changes use the Material 3 shared-axis transition (30 pt slide + fade; 400 ms in, 200 ms out). An edge swipe back keeps UIKit's own interactive pop.
+- New: rows without a card (chat list, model list) dip on the spring when pressed; buttons that cover a big area no longer shrink when pressed; the choice-popup rows no longer flash the accent colour in Material 3.
+- Reduce Motion switches every one of these animations off.
+- Not compiled or run on a device.
+
+[0.8.0 beta 14]
+- Press on a card (list row), rewritten after the video:
+  * the corner morph is no longer a Core Animation path interpolation (it could bend the outline while the spring overshot, and the ripple mask jumped to the final outline at once, so the ripple stuck out of the corners). The corner radii are now numbers solved frame by frame with the exact spring formula (Expressive spatial fast: damping 0.6, stiffness 800), clamped to 0...half height, and the card shape and the ripple mask get the very same path every frame.
+  * the ripple (10 % of the text colour, as in Material 3) grows to the farthest corner in 450 ms with the emphasized decelerate curve and STAYS while the finger is down (before it faded half-way and left a hard edge); it fades in 300 ms when the finger leaves.
+  * the dip (scale 0.975) is kept, on the same spring.
+- Not compiled or run on a device.
+
+[0.8.0 beta 15]
+- Ported from the new source (jb-main): Sign in with Google for Gemini (OAuth 2.0 + PKCE in the system web sheet, refresh token in the Keychain, Bearer token + optional x-goog-user-project instead of the API key).
+  * new GoogleAuth.h/.m; KeyStore hands out a marker in place of the key while Google is the active method, plus named secrets for the refresh token; KeyTier, GeminiClient and GeminiStream authorize each request first (and again on every retry, so a token that expired in between is refreshed).
+  * API key screen (Gemini): "Sign in with Google" button, sign-out with a confirm popup, status line with the account; the settings row shows the Google account.
+  * chat errors say "sign in to Google again" / "no permission, check the API and the Project ID" when the key in use is the Google session.
+  * strings added in vi and en (same key count), build.sh links AuthenticationServices.
+  * merged by hand: the Material radii, the choice popup and the portrait-only orientation of the key screen are kept. The unrelated build.yml and the unused StreamWatchdog of the new source were NOT ported (our streams already have their own watchdog).
+  * requirement: the iOS OAuth client in Google Cloud must use the bundle id com.puc.claudemini; with the OAuth app in "Testing" the refresh token lasts 7 days.
+- Gradient wallpaper, much livelier: 7 blobs instead of 5; each follows its own closed Lissajous path (they cross and pass each other, no more plain circles), with larger reach and laps of 17 to 29 s; stronger breathing (0.78 to 1.22), a brightness pulse, and a slow hue slide to the neighbouring hues and back on its own clock. Still under Reduce Motion.
+- Not compiled or run on a device.
+
+[0.8.0 beta 16]
+- Settings: a Google account card at the very top, in the style of the account card of the system settings: the Claude mark inside two rings of blue dots (the rings turn slowly in opposite directions, still under Reduce Motion), the title "Tài khoản Google" and "Đăng nhập tài khoản Google để không cần dùng key API" (the email once signed in). Material 3: rounded card, dips on the spatial spring when pressed.
+- The card opens a new screen: the big ring + logo, the account state, and buttons: Sign in with Google (filled), Check connection (asks Gemini for the model list with the Google session and shows the result), Sign out (tonal, error colour, with the confirm popup), Use a Gemini API key instead (opens the key screen). Sign-in and sign-out update the card and the Gemini key row at once.
+- New: GoogleAccountViewController.h/.m, 9 strings in vi and en (equal counts).
+- Not compiled or run on a device.
+
+[0.8.0 beta 17]
+- Material 3 stretch overscroll (as Android 12+) at the top and the bottom of every list and page (settings, history, model lists, key screen, font page, account screen...). In the Material design the rubber band that slid the content away is replaced by a stretch:
+  * pulling past an end grows the content along the scroll axis (up to 28 %), anchored on the edge it is pulled from, with a resistance that grows with the distance (tanh curve); the content is not moved;
+  * letting go springs it back, critically damped (stiffness 300, ratio 1), so it never shrinks below its natural size; catching it again while it springs back carries on from where it is on screen;
+  * pulling back the other way gives the finger back to normal scrolling by exactly the distance that is left over;
+  * a fling that runs into an end swells the content by an amount that follows the speed it arrived with (0.045 x speed, at most 16 % of the height, rising in 100 ms) and then springs back;
+  * works for short content too (pull either way), nothing is stretched sideways.
+  * Done on the layer (sublayerTransform about the visible edge), with no delegate: cells, headers and the account card stretch together. Off (the normal rubber band comes back) in the Classic design and with Reduce Motion.
+- The chat page itself (a web view with its own scrolling) keeps the system overscroll.
+- Not compiled or run on a device.
+
+[0.8.0 beta 18]
+- Material 3 delete dialog (DeleteConfirmViewController): a card with a trash can drawn in code. Press Delete: the lid flips open (-38 deg), a sheet drops into the can, the lid snaps shut with a little overshoot, the can squashes and settles (1.25 s film, one haptic when the lid lands), then the card leaves and the action runs. Cancel, a tap outside, and Reduce Motion (no film, 0.2 s) are handled. In the Classic design the old choice pop-up is used.
+  Every place that deletes has its own words: "Xóa API key Gemini/Claude?" (key screen), "Xóa cuộc trò chuyện?" with the conversation title (swipe in History; it had no confirmation before), "Xóa toàn bộ lịch sử?" (Settings).
+- "Thinking" line in the chat (web): a light sweeps over the words and the star turns and breathes; tap to read the thoughts as they stream in; when the answer starts it folds away and settles into "Đã suy nghĩ N giây" (tap again to read the thoughts); an instant answer shows nothing. Real thoughts: Gemini (includeThoughts) and Claude (thinking deltas, summarized) now stream their reasoning summary to the page (onThought). Reduce Motion: no sweep or spin.
+- Material 3 message box: the text on top and growing upward line by line (standard easing), and under it a row with the attach button (outlined circle), the model pill, the mic and the send button.
+  * the model pill: tapping opens the model list; when the model changes the old name rolls up and out while the new one rolls in from below and the pill resizes on the spatial spring (the model button of the top bar is hidden in Material, as the model is now in the box);
+  * the send button: a drawn arrow that wakes up (bump) when there is something to send; while a reply is written the arrow flies up and shrinks and a stop square turns in; press dips it;
+  * a thin conic light (accent) runs round the box while a reply is written (still, soft border under Reduce Motion);
+  * the sent text lifts off the box and fades (0.42 s).
+  The Classic design keeps the old box.
+- Not compiled or run on a device.
+
+[0.8.0 beta 19]
+- Stretch overscroll reacts at once: the few points of movement before the page starts to scroll now count as part of the pull when the page is at an end (no dead zone), so the content starts to stretch the moment the finger moves. A quick flick at an end that has no room to scroll (flick down at the top, up at the bottom) swells the content with the flick speed (like a fling that runs into the end), then springs back.
+- Not compiled or run on a device.
+
+[0.8.0 beta 20]
+- The Claude mark follows the app icon: change the icon (SideStore purple, LiveContainer blue, Dopamine green, Chimera white, Sileo teal, Github red) and the Claude starburst turns that colour everywhere it is drawn (the model list rows of Claude, the Google account card and screen); the default icon keeps the original orange. Theme.claudeMarkColor / claudeMarkImage: the PNG is recoloured by its alpha (source-in), cached per colour; the account ring cross-fades to the new colour when the icon changes. The picture on the empty chat already followed the icon.
+- Not compiled or run on a device.
+
+[0.8.0 beta 21]
+- The rings of dots around the Claude mark (Google account card and screen) now follow the accent colour instead of a fixed blue: the outer ring is the accent, a little lighter and softer (readable on a light card, glowing on a dark one), the inner ring is its neighbour on the colour wheel (+7 % hue) and a little fainter. They change at once with the accent, the skin and the light/dark mode.
+- (beta 20) the Claude mark there already takes the colour of the chosen app icon.
+- Not compiled or run on a device.
+
+[0.8.0 beta 22]
+- Material 3 message box now floats: no panel behind it and no line above it. The wallpaper or the moving gradient runs behind the box down to the bottom edge (also under the home indicator), the page still stops above the box, and the box has a soft shadow (stronger in dark mode). Classic keeps the panel and the line.
+- Not compiled or run on a device.
+
+[0.8.0 beta 23]
+- Google profile sync: signing in now also asks for the "profile" scope; the name and the picture come from the ID token (userinfo as fallback, once per launch, for sessions that signed in before) and the picture is saved on the device (Application Support). GoogleAuth.accountName / accountAvatar / refreshProfileIfNeeded. Sign-out deletes the name, the picture and the file. Accounts that signed in before this beta must sign in again once to grant "profile" (the fallback only works with that scope).
+- The avatar is drawn round inside the dotted rings instead of the Claude mark, in the card at the top of Settings (title = the Google name, line under it = email) and on the account screen; no avatar yet or signed out: the Claude mark. The card refreshes by itself when the name or the picture arrives.
+- Account screen redone like the Apple Account page in Material 3: big round avatar, bold name, grey email, then grouped rounded cards of rows (coloured icon badge, title, chevron): Check connection / Sign in again / Use API key; and a separate card with Sign out in the error colour. Press highlight, busy state dims the rows, status line and sign-out confirmation kept.
+- Stretch overscroll at the bottom (and top) shows on the first pull: the move that carries the page to its end now counts the part that went past the end (expected offset against real offset), and the edge zone is 6 pt instead of 0.5 pt.
+- Not compiled or run on a device.
+
+[0.8.0 beta 24]
+- Fix: the message box cut the AI answers with a hard line above it (Material 3). The chat page now runs behind the floating box down to the bottom edge, has extra room at its end (CSS --dock = height of the box, so the last line still scrolls clear of the box), and fades out softly over the last stretch above the box (gradient mask on the web view) instead of being cut. Classic is unchanged.
+- Not compiled or run on a device.
+
+[0.8.0 beta 25]
+- New gooey + menu (Material 3), after Lucian UX/UI element #460 (MIT): tapping + turns it into an accent blob that squashes like a droplet and splits off into a fan of round buttons (Photo, Camera, File, Web search - ringed when on, and three dots = the full tool list). Closing (x, a tap outside, or choosing an action) pulls the buttons back stickily into one. The necks between the blobs are metaball bridges redrawn every frame (CADisplayLink) from the live positions. Colours follow the accent (fill) and its contrast colour (icons), so it changes with the skin, the custom accent and the app icon colour. Reduce Motion: no animation, the final states still work. Classic keeps the old list card. New files src/GooFanView.h/.m; the action switch of the old menu became performToolMenuItem: and is shared.
+- Material 3 is now the default look: a fresh install starts with it, and the first launch of every newly installed version selects it again (it can be switched back to Classic afterwards, until the next update).
+- Not compiled or run on a device.
+
+[0.8.0 beta 26]
+- See-through top bar with progressive blur (both designs): the navigation bar is now transparent and the page runs under it; behind the bar a TopBlurView (src/TopBlurView.h/.m) blurs what is under it - three stacked UIVisualEffectViews, each masked with its own fade, so the blur is strongest at the top edge and fades away downwards with no colour gradient (blur style follows light/dark). It sits in MiniNavigationController below the bar and covers the status bar too.
+- Screens that scroll run under the bar (chat, history, settings, Google account, appearance, accent colour, software update, model list); the other screens (system prompt, diagnostics, key screen, font preview) keep their layout from the bottom of the bar (edgesForExtendedLayout set per screen).
+- Chat page: the first message is pushed down by the height of the bar through the CSS variable --top (set from the safe area), the scroll indicator starts under the bar.
+- The two buttons of the chat bar (menu, new chat) are round frosted-glass buttons (GlassBarButton: blur, a hint of the accent, thin light edge, press-scale with a spring), like the back button of the reference picture.
+- Not compiled or run on a device. Layout risk: screens with their own frame layout may sit differently; tell me which ones.
+
+[0.8.0 beta 27]
+- Real blur at the top: the first version masked a UIVisualEffectView, which makes the system drop the blur (only a tint was left). TopBlurView now cuts the bar into 16 thin strips; each strip is a live UIVisualEffectView whose blur strength is set by a paused UIViewPropertyAnimator (fractionComplete), strongest at the top edge and falling off strip by strip. No mask and no colour gradient. Rebuilt on light/dark change, when the view gets a window and when the app becomes active (the system resets the blur in the background).
+- Real blur in the chat: the message box (Material 3) has a UIVisualEffectView behind its content with only a light tint over it (was a plain colour); the shadow was lowered so it does not dirty the glass. Classic keeps the solid box.
+- Fix: the greeting card of an empty chat sat under the bar (CSS .empty top: 29px) -> top: calc(29px + var(--top)).
+- Thinking line: the star is centred in its own box (flex), nudged 1 px up, and the text has an explicit line height so the two share one centre line.
+- Not compiled or run on a device.
+
+[0.8.0 beta 28]
+- Top blur follows the web design (PucBloxWeb "pbs"): the same five-blur profile (4/10/20/40/80 px, each solid to a depth and fading out by a deeper one, summed as variances) is turned into the strength of 28 live blur strips; the blur reaches 48 pt below the bar (the web: 72 px). Glass buttons get the soft drop shadow of the web buttons.
+- Not done: the web scales the blur with the scroll position (--sp, no blur at the top of a page); here the blur is always on.
+- Not compiled or run on a device.
+
+[0.8.0 beta 29]
+- Blur only, no colour: the wash layers that a blur view paints over the blurred picture (the "tint" of the Dark/Light style) are switched off on the top strips, the glass buttons and the Material 3 message box (TopBlurStripTint keeps the backdrop that blurs and the content view); the extra colour layers I had added (accent tint in the buttons, light fill in the message box) are gone. The thin edge line of the buttons and the box stays.
+- Note: it relies on the layer names inside UIVisualEffectView ("Backdrop"), so a future iOS could bring the wash back; it is re-applied on every layout.
+- Not compiled or run on a device.
+
+[0.8.0 beta 30]
+- Gooey + menu: the buttons now open in a straight row just above the message box, in line with it (first button right above the +, the row runs along the box; to the left when there is no room on the right; the old fan stays as the fallback when there is no room above the box). The first-version fan code was kept.
+- Smoother and nicer: the blobs, the + blob and the necks share a soft drop shadow (the necks only while they exist), the necks reach 52 pt so the droplet stretches longer before it splits; colours stay on the accent / its contrast colour so they follow the skin.
+- Not compiled or run on a device.
+
+[0.8.0 beta 31]
+- Gooey + menu colours now match the + of the message box when it is closed: the fill is the colour of the box (opaque Theme surface), a thin Theme border, grey icons (secondary text); the accent only marks an action that is switched on (web search: accent icon and ring). The + blob has the same look and turns into the x. The shadow is a little lighter.
+- Not compiled or run on a device.
+
+[0.8.0 beta 32]
+- Performance: the top blur was 28 live blur views over the scrolling page (the lag in Settings/chat). Now 6 strips (same strength profile). The mask I had put on the whole chat web view (a full offscreen pass per frame) is gone; the message box is a real blur so the text going under it needs no fade.
+- Gooey + menu lag (~15 fps): the blobs and the + blob had shadows without a shadow path (offscreen pass per frame each) and the necks had a shadow whose path changes every frame. Shadows now use fixed ovals as shadowPath and the necks have none.
+- Greeting card under the bar: the inset is now also measured from the bottom of the navigation bar in the chat view (not only the safe area), re-sent after every page load (a reload dropped the CSS variables) and written to the diagnostic log ("chat top inset N").
+- Not compiled or run on a device. If it is still slow: the animated gradient wallpaper behind the blurs makes every blur redraw each frame; tell me and I will calm it while a blur is on screen.
