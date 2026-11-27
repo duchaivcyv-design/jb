@@ -1,8 +1,8 @@
-name: Build IPA & DEB
+name: Build ClaudeMini (deb + ipa)
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
     paths-ignore:
       - '**.md'
@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-ipa-deb-${{ github.event.pull_request.number || github.ref }}
+  group: build-claudemini-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -49,110 +49,107 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: cai deo ma may
+      - name: Install packaging tools (ldid for signing, dpkg for the .deb)
         run: |
           brew install ldid dpkg
 
-      - name: Build IPA using repository build.sh
+      - name: Build .deb and .ipa using repository build.sh
         id: build
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x build.sh
+          chmod +x build.sh tools/make_ipa.sh
           ./build.sh
           shopt -s nullglob
+          deb_files=(dist/*.deb)
           ipa_files=(dist/*.ipa)
-          if (( ${#ipa_files[@]} == 0 )); then
-            echo "::error::build.sh completed but did not create an IPA in dist/."
+          if (( ${#deb_files[@]} == 0 )); then
+            echo "::error::build.sh completed but did not create a .deb in dist/."
             ls -la dist 2>/dev/null || true
             exit 1
           fi
-          printf 'ipa=%s\n' "${ipa_files[0]}" >> "$GITHUB_OUTPUT"
-
-      - name: Package DEB from built .app
-        id: deb
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          app_src=""
-          for candidate in build/Payload/*.app build/*.app Payload/*.app *.app; do
-            if [[ -d "$candidate" ]]; then
-              app_src="$candidate"
-              break
-            fi
-          done
-          if [[ -z "$app_src" ]]; then
-            ipa_path="${{ steps.build.outputs.ipa }}"
-            if [[ -n "$ipa_path" && -f "$ipa_path" ]]; then
-              tmp_extract="$(mktemp -d)"
-              unzip -q "$ipa_path" -d "$tmp_extract"
-              app_src="$(find "$tmp_extract/Payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
-            fi
-          fi
-          if [[ -z "$app_src" || ! -d "$app_src" ]]; then
-            echo "::error::Could not locate built .app bundle for DEB packaging."
+          if (( ${#ipa_files[@]} == 0 )); then
+            echo "::error::build.sh completed but did not create an .ipa in dist/."
+            ls -la dist 2>/dev/null || true
             exit 1
           fi
-          app_name="$(basename "$app_src" .app)"
-          info_plist="$app_src/Info.plist"
-          bundle_id="com.gestaltx.app"
-          app_version="1.0.0"
-          if [[ -f "$info_plist" ]]; then
-            parsed_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$info_plist" 2>/dev/null || true)"
-            parsed_ver="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$info_plist" 2>/dev/null || true)"
-            if [[ -z "$parsed_ver" ]]; then
-              parsed_ver="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$info_plist" 2>/dev/null || true)"
-            fi
-            [[ -n "$parsed_id" ]] && bundle_id="$parsed_id"
-            [[ -n "$parsed_ver" ]] && app_version="$parsed_ver"
-          fi
-          clean_ver="${app_version#v}"
-          [[ -z "$clean_ver" ]] && clean_ver="1.0.0"
-          pkg_root="$(mktemp -d)"
-          mkdir -p "$pkg_root/DEBIAN" "$pkg_root/Applications"
-          cp -R "$app_src" "$pkg_root/Applications/${app_name}.app"
-          main_bin="$pkg_root/Applications/${app_name}.app/${app_name}"
-          if [[ -f "$main_bin" ]] && command -v ldid >/dev/null 2>&1; then
-            ldid -S "$main_bin" || true
-          fi
-          printf "Package: %s\nName: %s\nVersion: %s\nArchitecture: iphoneos-arm64\nMaintainer: GestaltX\nSection: Utilities\nDescription: %s packaged for jailbroken iOS (rootless).\n" "$bundle_id" "$app_name" "$clean_ver" "$app_name" > "$pkg_root/DEBIAN/control"
-          printf "#!/bin/sh\nset -e\nif command -v uicache >/dev/null 2>&1; then\n  uicache -a || true\nfi\nexit 0\n" > "$pkg_root/DEBIAN/postinst"
-          chmod 0755 "$pkg_root/DEBIAN/postinst"
-          deb_out="dist/${app_name}_${clean_ver}_iphoneos-arm64.deb"
-          dpkg-deb -b "$pkg_root" "$deb_out"
-          echo "Created DEB: $deb_out"
-          printf 'deb=%s\n' "$deb_out" >> "$GITHUB_OUTPUT"
+          printf 'deb=%s\n' "${deb_files[0]}" >> "$GITHUB_OUTPUT"
+          printf 'ipa=%s\n' "${ipa_files[0]}" >> "$GITHUB_OUTPUT"
+          echo "Built: ${deb_files[0]} and ${ipa_files[0]}"
 
-      - name: Upload IPA artifact
+      - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Claude-mini-ipa
-          path: dist/*.ipa
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload DEB artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cai-deo-ma-may-deb
+          name: ClaudeMini-deb
           path: dist/*.deb
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish IPA & DEB to GitHub release
-        if: env.TAG != ''
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeMini-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      # Every push to main (and every v* tag) becomes a GitHub release that holds the .deb and the .ipa.
+      # The app's "Update" screen reads these releases: tag v<VERSION>-b<run number> for pushes, the tag itself for tags.
+      - name: Publish .deb and .ipa to a GitHub release
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          assets=(dist/*.ipa dist/*.deb)
-          if (( ${#assets[@]} == 0 )); then
-            echo "::error::No IPA or DEB found in dist/."
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ -n "$TAG" ]; then
+            REL="$TAG"
+            VERIFY="--verify-tag"
+          else
+            REL="v${VERSION}-b${GITHUB_RUN_NUMBER}"
+            VERIFY="--target ${GITHUB_SHA}"
+          fi
+          if ! gh release view "$REL" >/dev/null 2>&1; then
+            gh release create "$REL" $VERIFY --title "ClaudeMini ${REL}" --generate-notes
+          fi
+          gh release upload "$REL" dist/*.deb dist/*.ipa --clobber
+          # keep only the 10 newest automatic builds (v<VERSION>-b<N>) so the release list stays short
+          gh release list --limit 100 | awk -F'\t' '{print $3}' | grep -E -- '^v.*-b[0-9]+$' | tail -n +11 | while read -r old; do
+            gh release delete "$old" --cleanup-tag -y || true
+          done || true
+
+      # Pushes to the dev branch become a developer release (tag dev-v<VERSION>-b<run>, marked pre-release).
+      # The files are encrypted with the developer password (repository secret DEV_UPDATE_PASSWORD) before they
+      # are uploaded, so the public release holds only unreadable .enc files. The app decrypts them after the
+      # password has been entered in Settings > Data & info > Developer updates.
+      - name: Publish encrypted developer build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_UPDATE_PASSWORD: ${{ secrets.DEV_UPDATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEV_UPDATE_PASSWORD:-}" ]; then
+            echo "::error::Add the repository secret DEV_UPDATE_PASSWORD (Settings > Secrets and variables > Actions) to publish developer builds."
             exit 1
           fi
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --verify-tag --title "GestaltX ${TAG}" --generate-notes
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          REL="dev-v${VERSION}-b${GITHUB_RUN_NUMBER}"
+          mkdir -p dist-dev
+          for f in dist/*.deb dist/*.ipa; do
+            python3 tools/encrypt_dev.py "$f" "dist-dev/$(basename "$f").enc"
+          done
+          # The source code of this build, also encrypted: download it from the release and open it with
+          # tools/decrypt_dev.py (needs the developer password).
+          git archive --format=zip -o "ClaudeMini-source.zip" HEAD
+          python3 tools/encrypt_dev.py "ClaudeMini-source.zip" "dist-dev/ClaudeMini-source-v${VERSION}-b${GITHUB_RUN_NUMBER}.zip.enc"
+          rm -f "ClaudeMini-source.zip"
+          if ! gh release view "$REL" >/dev/null 2>&1; then
+            gh release create "$REL" --target "${GITHUB_SHA}" --prerelease --title "ClaudeMini developer build ${REL}" \
+              --notes "Encrypted developer build. Open it from the app: Settings > Data & info > Developer updates."
           fi
-          gh release upload "$TAG" "${assets[@]}" --clobber
+          gh release upload "$REL" dist-dev/*.enc --clobber
+          # keep only the 10 newest developer builds
+          gh release list --limit 100 | awk -F'\t' '{print $3}' | grep -E -- '^dev-.*-b[0-9]+$' | tail -n +11 | while read -r old; do
+            gh release delete "$old" --cleanup-tag -y || true
+          done || true
