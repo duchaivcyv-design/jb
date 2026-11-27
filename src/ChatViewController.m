@@ -32,6 +32,7 @@
 #import "VoiceChatManager.h"
 #import "FontStyle.h"
 #import "Material.h"
+#import "GoogleAuth.h"
 #import <math.h>
 
 static const CGFloat kMaxInputHeight = 120;
