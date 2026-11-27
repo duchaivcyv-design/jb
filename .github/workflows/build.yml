@@ -1,0 +1,155 @@
+name: Build ClaudeMini (deb + ipa)
+
+on:
+  push:
+    branches: [main, dev]
+    tags: ['v*']
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to build
+        type: string
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-claudemini-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      REF: ${{ github.event.release.tag_name || inputs.ref || github.ref }}
+      TAG: ${{ github.event.release.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+          fetch-depth: 0
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Toolchain info
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install packaging tools (ldid for signing, dpkg for the .deb)
+        run: |
+          brew install ldid dpkg
+
+      - name: Build .deb and .ipa using repository build.sh
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x build.sh tools/make_ipa.sh
+          ./build.sh
+          shopt -s nullglob
+          deb_files=(dist/*.deb)
+          ipa_files=(dist/*.ipa)
+          if (( ${#deb_files[@]} == 0 )); then
+            echo "::error::build.sh completed but did not create a .deb in dist/."
+            ls -la dist 2>/dev/null || true
+            exit 1
+          fi
+          if (( ${#ipa_files[@]} == 0 )); then
+            echo "::error::build.sh completed but did not create an .ipa in dist/."
+            ls -la dist 2>/dev/null || true
+            exit 1
+          fi
+          printf 'deb=%s\n' "${deb_files[0]}" >> "$GITHUB_OUTPUT"
+          printf 'ipa=%s\n' "${ipa_files[0]}" >> "$GITHUB_OUTPUT"
+          echo "Built: ${deb_files[0]} and ${ipa_files[0]}"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeMini-deb
+          path: dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload .ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeMini-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      # Every push to main (and every v* tag) becomes a GitHub release that holds the .deb and the .ipa.
+      # The app's "Update" screen reads these releases: tag v<VERSION>-b<run number> for pushes, the tag itself for tags.
+      - name: Publish .deb and .ipa to a GitHub release
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ -n "$TAG" ]; then
+            REL="$TAG"
+            VERIFY="--verify-tag"
+          else
+            REL="v${VERSION}-b${GITHUB_RUN_NUMBER}"
+            VERIFY="--target ${GITHUB_SHA}"
+          fi
+          if ! gh release view "$REL" >/dev/null 2>&1; then
+            gh release create "$REL" $VERIFY --title "ClaudeMini ${REL}" --generate-notes
+          fi
+          gh release upload "$REL" dist/*.deb dist/*.ipa --clobber
+          # keep only the 10 newest automatic builds (v<VERSION>-b<N>) so the release list stays short
+          gh release list --limit 100 | awk -F'\t' '{print $3}' | grep -E -- '^v.*-b[0-9]+$' | tail -n +11 | while read -r old; do
+            gh release delete "$old" --cleanup-tag -y || true
+          done || true
+
+      # Pushes to the dev branch become a developer release (tag dev-v<VERSION>-b<run>, marked pre-release).
+      # The files are encrypted with the developer password (repository secret DEV_UPDATE_PASSWORD) before they
+      # are uploaded, so the public release holds only unreadable .enc files. The app decrypts them after the
+      # password has been entered in Settings > Data & info > Developer updates.
+      - name: Publish encrypted developer build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEV_UPDATE_PASSWORD: ${{ secrets.DEV_UPDATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEV_UPDATE_PASSWORD:-}" ]; then
+            echo "::error::Add the repository secret DEV_UPDATE_PASSWORD (Settings > Secrets and variables > Actions) to publish developer builds."
+            exit 1
+          fi
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          REL="dev-v${VERSION}-b${GITHUB_RUN_NUMBER}"
+          mkdir -p dist-dev
+          for f in dist/*.deb dist/*.ipa; do
+            python3 tools/encrypt_dev.py "$f" "dist-dev/$(basename "$f").enc"
+          done
+          # The source code of this build, also encrypted: download it from the release and open it with
+          # tools/decrypt_dev.py (needs the developer password).
+          git archive --format=zip -o "ClaudeMini-source.zip" HEAD
+          python3 tools/encrypt_dev.py "ClaudeMini-source.zip" "dist-dev/ClaudeMini-source-v${VERSION}-b${GITHUB_RUN_NUMBER}.zip.enc"
+          rm -f "ClaudeMini-source.zip"
+          if ! gh release view "$REL" >/dev/null 2>&1; then
+            gh release create "$REL" --target "${GITHUB_SHA}" --prerelease --title "ClaudeMini developer build ${REL}" \
+              --notes "Encrypted developer build. Open it from the app: Settings > Data & info > Developer updates."
+          fi
+          gh release upload "$REL" dist-dev/*.enc --clobber
+          # keep only the 10 newest developer builds
+          gh release list --limit 100 | awk -F'\t' '{print $3}' | grep -E -- '^dev-.*-b[0-9]+$' | tail -n +11 | while read -r old; do
+            gh release delete "$old" --cleanup-tag -y || true
+          done || true
