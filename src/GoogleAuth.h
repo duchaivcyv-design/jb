@@ -34,7 +34,8 @@ typedef NS_ENUM(NSInteger, GoogleAuthErrorCode) {
 + (BOOL)prefersGoogle;               // when a pasted API key AND a Google session both exist, which one is used
 + (void)setPrefersGoogle:(BOOL)prefers;
 + (BOOL)isValidClientID:(NSString *)clientID;
-
+// Drops the cached access token (not the refresh token); the next accessTokenWithCompletion: will refresh.
++ (void)discardAccessToken;
 // Opens the Google sign-in page. `message` is nil when the person just closed the page (no error to show).
 + (void)signInWithClientID:(NSString *)clientID
                  projectID:(NSString *)projectID
