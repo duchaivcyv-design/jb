@@ -1,5 +1,5 @@
-# ClaudeMini 0.7.3 — Chat Gemini và Claude, sửa tin cũ, video, tạo ảnh và xuất Word/TXT
-
+# ClaudeMini 0.8.1-2r-fix — Chat Gemini và Claude, sửa tin cũ, video, tạo ảnh và xuất Word/TXT
+#PHÚC GAY
 🧠 AI — Suy luận & Tạo nội dung
 
 • Ép mức suy luận mặc định lên Cao (High): AI phân tích sâu hơn, trả lời chi tiết và mạch lạc hơn.
