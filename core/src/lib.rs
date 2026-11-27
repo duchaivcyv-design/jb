@@ -4,7 +4,7 @@
 
 mod jsstr;
 mod prompt;
-
+pub mod office_text;
 #[doc(hidden)]
 pub fn __js_literal_for_tests(s: &str) -> String {
     jsstr::js_literal(s)
